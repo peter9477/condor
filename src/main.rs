@@ -1268,8 +1268,13 @@ impl App {
         let lo = mode == "libreoffice" || (mode != "off" && self.settings.office_view != "previewer");
         if lo && convert::convertible(path) && convert::available() {
             // Replace (not add to) the history entry, so Back skips the placeholder.
+            // At the page last in view in the built-in view, if it was used this session.
             let url = format!("{}?converted", paths::path_to_url(path));
-            let _ = p.content.evaluate_script(&format!("location.replace({})", json!(url)));
+            let _ = p.content.evaluate_script(&format!(
+                "(function(u){{var n=null;try{{n=sessionStorage.getItem('condor:page:'+location.pathname)}}catch(e){{}}\
+                 location.replace(n?u+'#page='+n:u)}})({})",
+                json!(url)
+            ));
             let msg = json!({"ev": "banner", "pane": id, "show": true, "kind": "converting", "path": path});
             self.set_banner(id, Some(msg));
             return;
@@ -1339,9 +1344,7 @@ impl App {
         self.send_pane_state(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let path = paths::url_to_path(url);
-        if render::is_docx_url(url) {
-            return;
-        }
+        let docx = render::is_docx_url(url);
         if render::is_converted_url(url) {
             let converting = p.banner.as_ref().map_or(false, |b| b["kind"] == "converting");
             if converting {
@@ -1349,7 +1352,7 @@ impl App {
             }
             return;
         }
-        if let Some(f) = path.clone() {
+        if let Some(f) = path.clone().filter(|_| !docx) {
             let proxy = self.proxy.clone();
             std::thread::spawn(move || {
                 if !render::previewable(&f) {
@@ -1513,6 +1516,11 @@ impl App {
         let p = self.panes.get(&id)?;
         // Saved positions are for the rendered view (the source view's last only a session).
         let f = paths::url_to_path(url).filter(|_| !render::is_source_url(url))?;
+        // Office files: only the built-in view's position is known (the PDF viewer, the Windows
+        // previewer and the placeholder page under it all read as 0).
+        if convert::convertible(&f) && (!render::is_docx_url(url) || p.preview.is_some()) {
+            return None;
+        }
         (Some(&f) == p.current.as_ref() && !p.restoring).then_some(f)
     }
 

@@ -8,7 +8,7 @@
   var key = "condor:" + location.pathname + location.search;  // source and rendered views apart
   // Nothing is saved until a restore has run or the reader has touched the page, so a stray
   // event during loading can't record "top of page" over the saved position.
-  var armed = false, restoring = false, timer = null;
+  var armed = false, restoring = false, timer = null, wanted = null;
 
   function nodePath(n) {
     var p = [];
@@ -41,10 +41,12 @@
   function saveSoon() {
     if (!timer) timer = setTimeout(function () { timer = null; save(); }, 200);
   }
-  function userActs() { restoring = false; armed = true; }
+  var armedByUser = false;
+  function userActs() { restoring = false; armed = true; armedByUser = true; }
 
   function apply(st) {
     if (!st) return;
+    wanted = st;
     var x = st.x || 0, y = st.y || 0, n = 0;
     if (st.sel) {
       try {
@@ -67,6 +69,9 @@
     state: state,
     hasSession: function () { try { return !!sessionStorage.getItem(key); } catch (e) { return false; } },
     restore: function (st) { if (!this.hasSession()) apply(st); armed = true; },
+    // For pages that build themselves after loading (the built-in Word view): restore again
+    // now that the page has its full height, unless the reader has moved since.
+    again: function () { if (wanted && !armedByUser) apply(wanted); },
   };
 
   function start() {

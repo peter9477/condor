@@ -192,6 +192,17 @@ function contents(root) {
     contents(out);
     fit();
     addEventListener("resize", fit);
+    if (window.__condor) window.__condor.again();
+    // Remember the page in view, so the PDF view (LibreOffice's pages match ours) can open there.
+    const pages = [...out.querySelectorAll("section.docx")];
+    const key = "condor:page:" + location.pathname;
+    let last = 0;
+    const note = () => {
+      let n = 1;
+      pages.forEach((p, i) => { if (p.getBoundingClientRect().top < innerHeight / 3) n = i + 1; });
+      if (n !== last) { last = n; try { sessionStorage.setItem(key, String(n)); } catch (e) {} }
+    };
+    addEventListener("scroll", note, {passive: true});
   } catch (e) {
     out.innerHTML = "";
     const d = document.createElement("div");
