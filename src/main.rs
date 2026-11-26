@@ -30,6 +30,9 @@ use wry::{PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder};
 const SPLITTER: f64 = 5.0;
 /// Height (UI CSS px) of the "file changed" banner above the content view.
 const BANNER: f64 = 34.0;
+/// Gap above the content view, drawn by the UI as a line so documents read as a
+/// separate pane (an HTML page can look just like the sidebar).
+const FRAME: f64 = 1.0;
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 const SCROLL_POLL: Duration = Duration::from_millis(1500);
 
@@ -199,7 +202,8 @@ impl App {
             size: PhysicalSize::new(size.width, size.height).into(),
         });
         let x = (((self.st.sidebar_width + SPLITTER) * dpr).round() as u32).min(size.width);
-        let y = if self.banner { ((BANNER * dpr).round() as u32).min(size.height) } else { 0 };
+        let top = if self.banner { BANNER } else { 0.0 } + FRAME;
+        let y = ((top * dpr).round() as u32).min(size.height);
         let _ = self.content.set_bounds(Rect {
             position: PhysicalPosition::new(x as i32, y as i32).into(),
             size: PhysicalSize::new(size.width - x, size.height - y).into(),

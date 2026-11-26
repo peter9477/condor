@@ -28,6 +28,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #tree { flex: 1; overflow: auto; padding: 4px 0 24px; outline: none; }
 #split { position: absolute; top: 0; bottom: 0; left: var(--w); width: 5px; cursor: col-resize; background: var(--split); }
 #split:hover, #split.drag { background: var(--cursor); }
+/* Shows through the 1px gap above the content view, and edges the splitter, framing the document pane. */
+#pane { position: absolute; left: calc(var(--w) + 5px); right: 0; top: 0; bottom: 0; background: var(--border); }
+#split { box-shadow: inset -1px 0 var(--border); }
 .row { display: flex; align-items: center; height: 22px; padding-right: 6px; white-space: nowrap; cursor: default; border: 1px solid transparent; }
 .row:hover { background: var(--hover); }
 .row.sel { background: var(--sel); }
@@ -86,6 +89,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   <div id="tree" tabindex="0"></div>
 </div>
 <div id="split"></div>
+<div id="pane"></div>
 <div id="banner" class="hidden">
   <span class="msg" id="bmsg"></span>
   <button id="breload">Reload</button>
