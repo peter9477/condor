@@ -669,6 +669,19 @@ impl App {
         }
     }
 
+    /// How an Office file is shown unless the reader chose otherwise for it: the global
+    /// setting, where "auto" means the Windows previewer, except for types whose previewer
+    /// often shows nothing (Visio's, without Visio installed), which go to LibreOffice.
+    fn office_default(&self, path: &str) -> &'static str {
+        match self.settings.office_view.as_str() {
+            "previewer" => "previewer",
+            "libreoffice" => "libreoffice",
+            "off" => "off",
+            _ if convert::previewer_unreliable(path) && convert::available() => "libreoffice",
+            _ => "previewer",
+        }
+    }
+
     /// File types the tree shows undimmed besides the viewable list: those with highlighting,
     /// and Office documents when a previewer or LibreOffice can show them.
     fn showable(&self) -> Vec<String> {
@@ -951,8 +964,7 @@ impl App {
                 if !matches!(mode.as_str(), "previewer" | "libreoffice") {
                     return;
                 }
-                let global = self.settings.office_view.as_str();
-                if mode == global || (global == "auto" && mode == "previewer") {
+                if mode == self.office_default(&file) {
                     self.st.office_view.remove(&file);
                 } else {
                     self.st.office_view.insert(file.clone(), mode);
@@ -1011,7 +1023,7 @@ impl App {
         if p.current.as_deref() != Some(path) || p.banner.is_some() {
             return; // moved on, or a change banner is already showing
         }
-        let mode = self.st.office_view.get(path).cloned().unwrap_or_else(|| self.settings.office_view.clone());
+        let mode = self.st.office_view.get(path).cloned().unwrap_or_else(|| self.office_default(path).to_string());
         if matches!(mode.as_str(), "auto" | "previewer") {
             let hwnd = platform::window_handle(&self.shells[&p.shell].window);
             match platform::Preview::open(hwnd, path, p.rect.get()) {
@@ -1027,7 +1039,9 @@ impl App {
             }
         }
         let p = &self.panes[&id];
-        if matches!(mode.as_str(), "auto" | "libreoffice") && convert::convertible(path) && convert::available() {
+        // LibreOffice if chosen, or when the previewer failed (unless the setting says previewer only).
+        let lo = mode == "libreoffice" || (mode != "off" && self.settings.office_view != "previewer");
+        if lo && convert::convertible(path) && convert::available() {
             // Replace (not add to) the history entry, so Back skips the placeholder.
             let url = format!("{}?converted", paths::path_to_url(path));
             let _ = p.content.evaluate_script(&format!("location.replace({})", json!(url)));

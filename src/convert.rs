@@ -16,6 +16,13 @@ pub const EXTS: &[&str] = &[
 const TIMEOUT: Duration = Duration::from_secs(180);
 const CACHE_FILES: usize = 300;
 
+/// Types whose Windows previewer is often installed but shows a blank pane (Visio's, when
+/// Visio itself isn't installed); "auto" uses LibreOffice for these.
+pub fn previewer_unreliable(path: &str) -> bool {
+    let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(ext.as_str(), "vsd" | "vsdx" | "vsdm" | "vdx")
+}
+
 pub fn convertible(path: &str) -> bool {
     let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     EXTS.contains(&ext.as_str())
