@@ -138,6 +138,11 @@ body.popout #side, body.popout #split { display: none; }
 #tagbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 #tagbar .tag { margin: 0; cursor: pointer; line-height: 20px; padding: 0 8px; border: 1px solid transparent; opacity: .75; }
 #tagbar .tag.on { border-color: currentColor; opacity: 1; font-weight: 600; }
+/* Items the user hid: gone from the tree unless shown (dimmed) for now with the tag bar's chip. */
+body:not(.show-hid) .node.hid { display: none; }
+.node.hid > .row, .hit.hid { opacity: .5; }
+.hit .hidmark, .node.hid > .row .hidmark { flex: none; margin-left: 5px; color: var(--muted); font-size: 11px; }
+#tagbar .tag.hidchip { --h: 0; filter: grayscale(1); }
 #tagbar .clear { margin: 0; border: 0; background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 11px; }
 #tagbar .clear:hover { color: var(--fg); }
 #tagbox { position: fixed; z-index: 11; width: 230px; padding: 8px; background: var(--bg); border: 1px solid var(--border);
@@ -210,6 +215,7 @@ body.popout #side, body.popout #split { display: none; }
 <div id="menu" class="hidden">
   <button id="m-star">Star</button>
   <button id="m-tags">Tags&#x2026;</button>
+  <button id="m-hide" title="Hide it from the tree; the tag bar's &#x2298; hidden chip shows hidden items again">Hide</button>
   <hr class="m-file">
   <button id="m-other" class="m-file">Open in other pane</button>
   <button id="m-window" class="m-file">Open in new window</button>
@@ -253,6 +259,7 @@ body.popout #side, body.popout #split { display: none; }
   <button class="pclose" title="Close (Esc)">&#x00d7;</button>
   <div class="tb-title"></div>
   <label><input type="checkbox" class="tb-star"> <span class="star" style="margin:0">&#x2605;</span> Starred</label>
+  <label title="Hidden from the tree until shown with the tag bar's &#x2298; hidden chip"><input type="checkbox" class="tb-hid"> <span style="color:var(--muted)">&#x2298;</span> Hidden</label>
   <div class="tb-list"></div>
   <input class="tb-new" placeholder="New tag, then Enter" spellcheck="false">
 </div>
@@ -409,6 +416,10 @@ function forget(n) {
 let tags = {};          // path -> {dir, tags: [...]}
 let tagFilter = [];     // the tree shows only items with any of these
 let STAR = "★";
+// The tag for items hidden from the tree (never shown as a tag).
+const HIDE = "\u2298hidden";
+let showHid = false;    // hidden items shown (dimmed) for now
+const special = (t) => t === STAR || t === HIDE;
 let showable = new Set();   // extensions Condor highlights (besides the viewable list)
 let treeMode = "all";
 function tagsOf(p) { const t = p && tags[p]; return t ? t.tags : []; }
@@ -422,7 +433,7 @@ function tagEl(t) {
 }
 function allTags() {
   const set = new Set();
-  for (const v of Object.values(tags)) for (const t of v.tags) if (t !== STAR) set.add(t);
+  for (const v of Object.values(tags)) for (const t of v.tags) if (!special(t)) set.add(t);
   return [...set].sort((a, b) => a.localeCompare(b, undefined, {sensitivity: "base"}));
 }
 function isViewable(name) {
@@ -436,18 +447,29 @@ function isViewable(name) {
 function decorate(n) {
   const row = rowOf(n);
   if (!row) return;
-  for (const b of row.querySelectorAll(":scope > .tag, :scope > .star")) b.remove();
+  for (const b of row.querySelectorAll(":scope > .tag, :scope > .star, :scope > .hidmark")) b.remove();
   if (!n.dataset.dir) row.classList.toggle("noview", !isViewable(baseName(n.dataset.path)));
   const t = tagsOf(n.dataset.path);
+  n.classList.toggle("hid", t.includes(HIDE));
   if (!t.length) return;
   const x = row.querySelector(":scope > .x");
   const add = (el) => x ? row.insertBefore(el, x) : row.append(el);
+  if (t.includes(HIDE)) add(Object.assign(document.createElement("span"), {className: "hidmark", textContent: "\u2298 hidden", title: "Hidden (right-click to unhide)"}));
   if (t.includes(STAR)) {
     const st = document.createElement("span");
     st.className = "star"; st.textContent = STAR; st.title = "Starred";
     add(st);
   }
-  for (const tg of t) if (tg !== STAR) add(tagEl(tg));
+  for (const tg of t) if (!special(tg)) add(tagEl(tg));
+}
+function toggleHide(path, dir) {
+  const t = tagsOf(path);
+  setTags(path, dir, t.includes(HIDE) ? t.filter((x) => x !== HIDE) : [...t, HIDE]);
+}
+function setShowHid(on) {
+  showHid = on;
+  document.body.classList.toggle("show-hid", on);
+  renderTagbar();
 }
 function setTags(path, dir, list) { post({cmd: "setTags", path, dir: !!dir, tags: list}); }
 function toggleStar(path, dir) {
@@ -459,8 +481,10 @@ function renderTagbar() {
   const bar = document.getElementById("tagbar");
   const names = allTags();
   const anyStar = Object.values(tags).some((v) => v.tags.includes(STAR));
+  const nHid = Object.values(tags).filter((v) => v.tags.includes(HIDE)).length;
+  if (!nHid && showHid) { showHid = false; document.body.classList.remove("show-hid"); }
   bar.replaceChildren();
-  bar.classList.toggle("hidden", !names.length && !anyStar && !tagFilter.length);
+  bar.classList.toggle("hidden", !names.length && !anyStar && !nHid && !tagFilter.length);
   const chip = (t, label) => {
     const c = tagEl(label || t);
     if (t === STAR) c.style.setProperty("--h", 45);
@@ -471,6 +495,14 @@ function renderTagbar() {
   };
   if (anyStar) chip(STAR, STAR + " starred");
   for (const t of names) chip(t);
+  if (nHid) {
+    const c = tagEl("\u2298 " + nHid + " hidden");
+    c.classList.add("hidchip");
+    c.classList.toggle("on", showHid);
+    c.title = showHid ? "Hide them again" : "Show the items you've hidden (dimmed), to unhide them";
+    c.onclick = () => setShowHid(!showHid);
+    bar.append(c);
+  }
   if (tagFilter.length) {
     const c = document.createElement("button");
     c.className = "clear"; c.textContent = "show all";
@@ -651,6 +683,7 @@ function visibleNodes() {
   const walk = (container) => {
     for (const c of container.children) {
       if (!c.classList || !c.classList.contains("node")) continue;
+      if (c.classList.contains("hid") && !showHid) continue;
       out.push(c);
       const k = kidsOf(c);
       if (k && !k.classList.contains("hidden")) walk(k);
@@ -881,7 +914,7 @@ function showPaneTags(id) {
   star.classList.toggle("on", on);
   star.textContent = on ? "\u2605" : "\u2606";
   star.title = on ? "Starred (click to unstar)" : "Star this file";
-  const names = t.filter((x) => x !== STAR);
+  const names = t.filter((x) => !special(x));
   tg.classList.toggle("on", names.length > 0);
   tg.title = names.length ? "Tags: " + names.join(", ") : "Tags";
 }
@@ -963,6 +996,7 @@ function onResults(msg) {
                                     : "Nothing found for “" + msg.query + "”.";
   frag.push(st);
   for (const h of msg.hits) {
+    if (!showHid && tagsOf(h.path).includes(HIDE)) continue;
     const d = document.createElement("div");
     d.className = "hit" + (h.path === selected ? " sel" : "");
     d.dataset.path = h.path;
@@ -974,7 +1008,8 @@ function onResults(msg) {
     name.append(nm);
     const t = tagsOf(h.path);
     if (t.includes(STAR)) name.append(Object.assign(document.createElement("span"), {className: "star", textContent: STAR}));
-    for (const tg of t) if (tg !== STAR) name.append(tagEl(tg));
+    for (const tg of t) if (!special(tg)) name.append(tagEl(tg));
+    if (t.includes(HIDE)) { d.classList.add("hid"); name.append(Object.assign(document.createElement("span"), {className: "hidmark", textContent: "\u2298 hidden"})); }
     const path = document.createElement("div");
     path.className = "hpath";
     path.textContent = "‎" + h.folder;   // rtl box keeps the end visible; the mark keeps text order
@@ -1058,6 +1093,7 @@ function fillTagbox() {
   tagbox.querySelector(".tb-title").textContent = baseName(tbPath);
   tagbox.querySelector(".tb-title").title = tbPath;
   tagbox.querySelector(".tb-star").checked = have.includes(STAR);
+  tagbox.querySelector(".tb-hid").checked = have.includes(HIDE);
   const list = tagbox.querySelector(".tb-list");
   list.replaceChildren();
   for (const t of allTags()) {
@@ -1096,6 +1132,10 @@ function hideTagbox() {
   tagbox.classList.add("hidden");
   tbPane = null;
 }
+tagbox.querySelector(".tb-hid").onchange = (e) => {
+  const cur = tagsOf(tbPath).filter((x) => x !== HIDE);
+  setTags(tbPath, tbDir, e.target.checked ? [...cur, HIDE] : cur);
+};
 tagbox.querySelector(".tb-star").onchange = (e) => {
   const cur = tagsOf(tbPath).filter((x) => x !== STAR);
   setTags(tbPath, tbDir, e.target.checked ? [...cur, STAR] : cur);
@@ -1135,11 +1175,13 @@ function openMenu(path, dir, x, y) {
   document.getElementById("m-openwith").classList.toggle("hidden", (menuDir && !isZip) || !canOpenWith);
   
   document.getElementById("m-star").textContent = tagsOf(menuPath).includes(STAR) ? "Unstar" : "Star";
+  document.getElementById("m-hide").textContent = tagsOf(menuPath).includes(HIDE) ? "Unhide" : "Hide";
   menu.dataset.x = x; menu.dataset.y = y;
   menu.classList.remove("hidden");
   fitPopup(menu, x, y, true);
 }
 document.getElementById("m-star").onclick = () => { hideMenu(); toggleStar(menuPath, menuDir); };
+document.getElementById("m-hide").onclick = () => { hideMenu(); toggleHide(menuPath, menuDir); };
 document.getElementById("m-tags").onclick = () => { hideMenu(); openTagbox(menuPath, menuDir, +menu.dataset.x, +menu.dataset.y); };
 document.getElementById("m-open").onclick = () => { hideMenu(); post({cmd: "openExternal", path: menuPath, with: false}); };
 document.getElementById("m-other").onclick = () => { hideMenu(); post({cmd: "openOther", path: menuPath}); };

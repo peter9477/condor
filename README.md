@@ -47,6 +47,9 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   bar) to star it or give it tags, shown as badges in the tree; `*` stars the item under
   the keyboard cursor. The chips above the tree filter it to items with any of the chosen
   tags, plus the folders leading to them. Tags are kept per environment, by path.
+- Hiding: right-click → Hide (or "Hidden" in a document's # box) takes a file or folder out
+  of the tree and out of search results, e.g. old revisions. The ⊘ N hidden chip above the
+  tree shows them again, dimmed, until clicked again, so they can be unhidden.
 - File names that don't fit are shortened in the middle, keeping the end and the
   extension. Files Condor can't show are dimmed.
 - Each document has a bar above it with its name and its own controls: back/forward, source
