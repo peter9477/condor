@@ -209,8 +209,13 @@ impl Settings {
     }
 }
 
+/// `settings.json` beside the environments, or the file named by CONDOR_SETTINGS (so a test
+/// instance can't change the settings of the windows someone is using).
 pub fn settings_file() -> PathBuf {
-    config_dir().join("settings.json")
+    match std::env::var_os("CONDOR_SETTINGS") {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => config_dir().join("settings.json"),
+    }
 }
 
 pub fn load_settings() -> Settings {
