@@ -131,6 +131,8 @@ body.popout #side, body.popout #split { display: none; }
 #spanel .stype { color: var(--muted); padding-left: 22px; }
 #spanel .stype button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 14px; }
 #spanel .stype button:hover { color: var(--fg); }
+.pbar .ploading { flex: none; color: var(--muted); font-size: 12px; padding: 0 8px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
 #menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
 .pbar .b-star.on { color: #d4a017; background: none; }
 .pbar .b-tags { font-size: 13px; font-weight: 600; }
@@ -192,7 +194,7 @@ body.popout #side, body.popout #split { display: none; }
     <div class="pbar">
       <button class="b-back" title="Back (Alt+Left)">&#x2190;</button>
       <button class="b-fwd" title="Forward (Alt+Right)">&#x2192;</button>
-      <span class="pname"></span>
+      <span class="pname"></span><span class="ploading hidden">loading…</span>
       <button class="b-star" title="Star this file">&#x2606;</button>
       <button class="b-tags" title="Tags">#</button>
       <button class="b-office hidden"></button>
@@ -779,6 +781,7 @@ function onPane(msg) {
   const q = (c) => p.group.querySelector(c);
   q(".pname").textContent = msg.file ? baseName(msg.file) : "";
   q(".pname").title = msg.file || "";
+  q(".ploading").classList.toggle("hidden", !msg.loading);
   const src = q(".b-src");
   src.classList.toggle("hidden", !msg.canSource);
   src.classList.toggle("on", !!msg.source);

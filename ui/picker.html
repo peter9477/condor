@@ -1,0 +1,190 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Condor</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f8; --fg: #1f2328; --muted: #6e7781; --hover: #e8eaed; --sel: #d0e3ff; --cursor: #0969da;
+  --border: #d0d7de; --note-bg: #fff8c5; --note-fg: #3b2300; --note-bd: #d4a72c;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #181a1f; --fg: #d6dbe1; --muted: #8b949e; --hover: #262a31; --sel: #1f3b63; --cursor: #4493f8;
+          --border: #30363d; --note-bg: #3a2f0b; --note-fg: #f2e3b3; --note-bd: #9e6a03; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 13px/1.4 "Segoe UI", system-ui, sans-serif; user-select: none; }
+body { display: flex; flex-direction: column; padding: 16px; gap: 10px; }
+h1 { font-size: 16px; font-weight: 600; margin: 0; }
+#note { display: none; padding: 8px 10px; border-radius: 6px; background: var(--note-bg); color: var(--note-fg);
+  border: 1px solid var(--note-bd); }
+#list { flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: 6px; outline: none; min-height: 80px; }
+.item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: default; }
+.item:hover { background: var(--hover); }
+.item.sel { background: var(--sel); }
+.item .txt { flex: 1; min-width: 0; }
+.item .name { font-weight: 600; }
+.item .place { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.item.gone .name, .item.gone .place { opacity: .5; }
+.item .state { color: var(--muted); font-size: 12px; flex: none; }
+.item .forget { border: 0; background: none; color: var(--muted); font-size: 15px; cursor: pointer; padding: 0 4px; visibility: hidden; }
+.item.gone .forget { visibility: visible; }
+.item .forget:hover { color: var(--fg); }
+.empty { padding: 16px; color: var(--muted); }
+.buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.buttons .spacer { flex: 1; }
+button.b { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); cursor: pointer;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.b:hover { background: var(--hover); }
+button.primary { background: var(--cursor); border-color: var(--cursor); color: #fff; }
+button.primary:hover { background: var(--cursor); filter: brightness(1.1); }
+#wait { display: none; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
+#wait .where { color: var(--muted); word-break: break-all; }
+.spin { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--cursor); border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+body.waiting #pick { display: none; }
+body.waiting #wait { display: flex; }
+#pick { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+</style>
+</head>
+<body>
+<div id="pick">
+  <h1>Open an environment</h1>
+  <div id="note"></div>
+  <div id="list" tabindex="0"></div>
+  <div class="buttons">
+    <button class="b primary" id="open">Open</button>
+    <button class="b" id="new" title="Keep this environment's state in .condor in that folder"></button>
+    <button class="b" id="browse">New in a folder…</button>
+    <span class="spacer"></span>
+    <button class="b" id="quit">Quit</button>
+  </div>
+</div>
+<div id="wait">
+  <div class="spin"></div>
+  <div>Opening <b id="wname"></b>…</div>
+  <div class="where">Waiting for <span id="wplace"></span></div>
+  <div class="buttons">
+    <button class="b" id="back">Back to the list</button>
+    <button class="b" id="wquit">Quit</button>
+  </div>
+</div>
+<script>
+const post = (m) => window.ipc.postMessage(JSON.stringify(m));
+const $ = (id) => document.getElementById(id);
+let items = [], sel = 0, here = null;
+const gone = new Set();
+
+function render() {
+  const list = $("list");
+  list.replaceChildren();
+  if (!items.length) {
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "No environments yet.";
+    list.append(e);
+  }
+  items.forEach((it, i) => {
+    const row = document.createElement("div");
+    row.className = "item" + (i === sel ? " sel" : "") + (gone.has(it.state) ? " gone" : "");
+    const txt = document.createElement("div");
+    txt.className = "txt";
+    const n = document.createElement("div");
+    n.className = "name";
+    n.textContent = it.name;
+    const p = document.createElement("div");
+    p.className = "place";
+    p.textContent = "‎" + it.place + "‎";
+    p.title = it.place;
+    txt.append(n, p);
+    row.append(txt);
+    if (gone.has(it.state)) {
+      const s = document.createElement("span");
+      s.className = "state";
+      s.textContent = "not available";
+      row.append(s);
+    }
+    const x = document.createElement("button");
+    x.className = "forget";
+    x.textContent = "×";
+    x.title = "Remove from this list";
+    x.onclick = (ev) => {
+      ev.stopPropagation();
+      post({cmd: "forget", state: it.state});
+      items.splice(i, 1);
+      sel = Math.min(sel, Math.max(0, items.length - 1));
+      render();
+    };
+    row.append(x);
+    row.onclick = () => { sel = i; render(); };
+    row.ondblclick = () => openSel();
+    list.append(row);
+  });
+  $("open").disabled = !items.length;
+  const s = list.children[sel];
+  if (s && s.scrollIntoView) s.scrollIntoView({block: "nearest"});
+}
+
+function openSel() {
+  const it = items[sel];
+  if (it) post({cmd: "open", state: it.state});
+}
+
+function setNote(text) {
+  $("note").textContent = text || "";
+  $("note").style.display = text ? "block" : "none";
+}
+
+window.picker = {
+  recv(m) {
+    if (m.ev === "check") {
+      if (m.ok) gone.delete(m.state); else gone.add(m.state);
+      render();
+    } else if (m.ev === "waiting") {
+      $("wname").textContent = m.name;
+      $("wplace").textContent = m.place;
+      document.body.classList.add("waiting");
+    } else if (m.ev === "back") {
+      document.body.classList.remove("waiting");
+      if (m.note !== undefined) setNote(m.note);
+      $("list").focus();
+    }
+  },
+};
+
+$("open").onclick = openSel;
+$("new").onclick = () => post({cmd: "new"});
+$("browse").onclick = () => post({cmd: "browse"});
+$("quit").onclick = $("wquit").onclick = () => post({cmd: "quit"});
+$("back").onclick = () => post({cmd: "cancel"});
+document.addEventListener("keydown", (e) => {
+  if (document.body.classList.contains("waiting")) {
+    if (e.key === "Escape") post({cmd: "cancel"});
+    return;
+  }
+  if (e.key === "ArrowDown") { sel = Math.min(items.length - 1, sel + 1); render(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { sel = Math.max(0, sel - 1); render(); e.preventDefault(); }
+  else if (e.key === "Enter") { openSel(); e.preventDefault(); }
+  else if (e.key === "Escape") post({cmd: "quit"});
+});
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+const init = window.PICKER_INIT || {items: []};
+items = init.items || [];
+here = init.here;
+setNote(init.note);
+if (here) {
+  $("new").textContent = "New environment in " + here;
+  $("new").title = "Keep this environment's state in " + here + "\\.condor";
+} else {
+  $("new").style.display = "none";
+}
+render();
+if (init.waiting) window.picker.recv(Object.assign({ev: "waiting"}, init.waiting));
+$("list").focus();
+post({cmd: "ready"});
+</script>
+</body>
+</html>

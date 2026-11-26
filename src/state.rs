@@ -1,5 +1,4 @@
-//! Per-environment saved state: one JSON file per environment under
-//! `<config dir>/environments/<name>.json` (on Windows, %APPDATA%\Condor\environments).
+//! Per-environment saved state (where it lives: see envs.rs), and the global settings.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -139,22 +138,6 @@ pub fn env_file(name: &str) -> PathBuf {
     config_dir().join("environments").join(format!("{}.json", sanitize(name)))
 }
 
-pub fn load(name: &str) -> EnvState {
-    std::fs::read(env_file(name))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
-}
-
-pub fn save(name: &str, st: &EnvState) -> std::io::Result<()> {
-    let path = env_file(name);
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(st).unwrap_or_default())?;
-    std::fs::rename(&tmp, &path)
-}
 
 /// Settings shared by every Condor window and environment (`settings.json` beside the
 /// environments folder). Windows notice changes within a couple of seconds.

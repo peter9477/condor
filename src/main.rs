@@ -11,6 +11,7 @@
 //! Pop-out windows have a single pane and no tree.
 
 mod convert;
+mod envs;
 mod filters;
 mod paths;
 mod platform;
@@ -51,13 +52,24 @@ const SAVE_DELAY: Duration = Duration::from_millis(800);
 const SCROLL_POLL: Duration = Duration::from_millis(1500);
 
 const UI_HTML: &str = include_str!("../ui/index.html");
+const PICKER_HTML: &str = include_str!("../ui/picker.html");
+/// A document slower than this to arrive shows "loading" in its pane's bar.
+const LOADING_SHOWN_AFTER: Duration = Duration::from_millis(600);
+/// An environment slower than this to load (a slow share) shows the "waiting" window.
+const WAIT_SHOWN_AFTER: Duration = Duration::from_millis(700);
 
 type PaneId = u32;
 
 #[derive(Debug)]
 enum UserEvent {
-    /// Message from a window's UI webview.
+    /// Message from a window's UI webview (or the selector).
     Ipc(WindowId, String),
+    /// An environment's state was loaded (or its folder is missing): (request number, result).
+    Opened(u64, envs::Opened),
+    /// The selector's check of whether an environment's folder is reachable.
+    Checked(String, bool),
+    /// Another Condor was started for this environment: come to the front.
+    Activate,
     /// A directory listing finished (JSON message for the main UI).
     Listed(String),
     /// A pane is navigating to this URL.
@@ -165,10 +177,15 @@ struct Pane {
     inset: f64,
     /// Where the document goes, in physical pixels (x, y, w, h).
     rect: std::cell::Cell<(i32, i32, i32, i32)>,
+    /// A document is on its way: when to say so, and whether the bar says so now.
+    loading: Option<Instant>,
+    loading_shown: bool,
 }
 
 struct App {
-    env: String,
+    env: envs::Env,
+    /// Writes the state file off the UI thread (it may be on a slow share).
+    saver: envs::Saver,
     st: state::EnvState,
     proxy: EventLoopProxy<UserEvent>,
     ctx: WebContext,
@@ -414,9 +431,7 @@ impl App {
     fn save_now(&mut self) {
         self.capture_layout();
         if self.last_saved.as_ref() != Some(&self.st) {
-            if let Err(e) = state::save(&self.env, &self.st) {
-                log(&format!("save failed: {e}"));
-            }
+            self.saver.save(&self.env.state_file, &self.st);
             self.last_saved = Some(self.st.clone());
         }
         self.save_at = None;
@@ -502,6 +517,8 @@ impl App {
                 preview: None,
                 inset: 0.0,
                 rect: Default::default(),
+                loading: None,
+                loading_shown: false,
             },
         );
         if let Some(sh) = self.shells.get_mut(&wid) {
@@ -592,7 +609,7 @@ impl App {
     fn after_focus_change(&mut self, wid: WindowId) {
         let Some(sh) = self.shells.get(&wid) else { return };
         let file = self.panes.get(&sh.focused).and_then(|p| p.current.clone());
-        let env = if self.env == "default" { String::new() } else { format!(" ({})", self.env) };
+        let env = if self.env.label.is_empty() { String::new() } else { format!(" ({})", self.env.label) };
         let title = match &file {
             Some(p) => format!("{} - Condor{env}", platform::file_name(p)),
             None => format!("Condor{env}"),
@@ -671,7 +688,8 @@ impl App {
         self.send_ui(
             p.shell,
             &json!({"ev": "pane", "id": id, "file": p.current, "canSource": can,
-                    "source": can && render::is_source_url(&p.url), "auto": auto, "office": office}),
+                    "source": can && render::is_source_url(&p.url), "auto": auto, "office": office,
+                    "loading": p.loading_shown}),
         );
         if let Some((back, fwd)) = platform::history_state(&p.content) {
             self.send_ui(p.shell, &json!({"ev": "history", "id": id, "back": back, "forward": fwd}));
@@ -709,7 +727,7 @@ impl App {
         json!({
             "ev": "init",
             "mode": if kind == Kind::Main { "main" } else { "popout" },
-            "env": self.env,
+            "env": self.env.label,
             "update": self.update_ready,
             "roots": self.st.roots,
             "openWith": platform::CAN_OPEN_WITH,
@@ -810,19 +828,22 @@ impl App {
                 self.send_main(&json!({"ev": "filter", "filters": self.filter_state()}));
             }
             Cmd::OpenExternal { path, with } => {
-                if !std::path::Path::new(&path).is_file() {
-                    return;
-                }
-                if with {
-                    platform::open_with(&path);
-                } else if !platform::is_executable(&path)
-                    || platform::confirm(
-                        "Run program?",
-                        &format!("{} is a program or script. Opening it will run it.\n\nRun it?", platform::file_name(&path)),
-                    )
-                {
-                    platform::open_path(&path);
-                }
+                // On a worker thread: checking the file may be slow on a share.
+                std::thread::spawn(move || {
+                    if !std::path::Path::new(&path).is_file() {
+                        return;
+                    }
+                    if with {
+                        platform::open_with(&path);
+                    } else if !platform::is_executable(&path)
+                        || platform::confirm(
+                            "Run program?",
+                            &format!("{} is a program or script. Opening it will run it.\n\nRun it?", platform::file_name(&path)),
+                        )
+                    {
+                        platform::open_path(&path);
+                    }
+                });
             }
             Cmd::SetSettings { settings } => {
                 let s = settings.normalised();
@@ -1020,6 +1041,11 @@ impl App {
             let _ = p.content.set_visible(true);
         }
         let moved = path != p.current;
+        let page = |u: &str| u.split('#').next().unwrap_or("").to_string();
+        if page(url) != page(&p.url) {
+            p.loading = Some(Instant::now() + LOADING_SHOWN_AFTER);
+            p.loading_shown = false;
+        }
         p.current = path.clone();
         p.url = url.to_string();
         if moved {
@@ -1123,6 +1149,10 @@ impl App {
 
     fn on_page_loaded(&mut self, id: PaneId, url: &str) {
         debug(|| format!("loaded {id} {url}"));
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.loading = None;
+            p.loading_shown = false;
+        }
         self.send_pane_state(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let path = paths::url_to_path(url);
@@ -1230,9 +1260,11 @@ impl App {
 
     /// Save everything and start the new build with the same environment; true if it started.
     fn restart(&mut self) -> bool {
-        self.save_now();
-        let Some(exe) = &self.exe else { return false };
-        match std::process::Command::new(exe).args(["--env", &self.env]).spawn() {
+        let Some(exe) = self.exe.clone() else { return false };
+        // Stop answering for the environment first, or the new process would just bring
+        // this window to the front and quit.
+        self.finish();
+        match std::process::Command::new(exe).arg("--state").arg(&self.env.state_file).spawn() {
             Ok(_) => true,
             Err(e) => {
                 log(&format!("restart failed: {e}"));
@@ -1276,162 +1308,384 @@ impl App {
     }
 }
 
-fn parse_args() -> (String, Option<String>) {
-    let mut env = "default".to_string();
-    let mut path = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        if a == "--env" || a == "-e" {
-            if let Some(v) = args.next() {
-                env = v;
-            }
-        } else if let Some(v) = a.strip_prefix("--env=") {
-            env = v.to_string();
-        } else {
-            path = Some(a);
+impl App {
+    /// Open the main window (and pop-outs) for a loaded environment.
+    fn start(target: &EventLoopWindowTarget<UserEvent>, ctx: WebContext, proxy: EventLoopProxy<UserEvent>, env: envs::Env, st: state::EnvState) -> App {
+        render::set_roots(&st.roots);
+        let settings = state::load_settings();
+        render::set_width(&settings.doc_width);
+
+        // The main window comes first so its id is known; the shell map gets it right after.
+        let main_window = build_window(target, st.window, LogicalSize::new(1200.0, 800.0));
+        let main = main_window.id();
+        let mut app = App {
+            env,
+            saver: envs::Saver::start(),
+            proxy,
+            ctx,
+            main,
+            shells: HashMap::new(),
+            popout_order: Vec::new(),
+            panes: HashMap::new(),
+            next_pane: 1,
+            save_at: None,
+            next_poll: Instant::now() + SCROLL_POLL,
+            last_saved: None,
+            filters: Arc::new(filters::Filters::from_state(&st, &settings)),
+            exe: update::exe_path(),
+            update_ready: false,
+            restart_at: None,
+            settings_sig: watch::signature(&state::settings_file().to_string_lossy()),
+            settings,
+            st,
+        };
+        let ui = build_ui(&mut app.ctx, &main_window, &app.proxy, Kind::Main);
+        app.shells.insert(main, Shell { kind: Kind::Main, ui, window: main_window, ui_dpr: None, panes: Vec::new(), focused: 0 });
+        let first = app.st.open_file.clone();
+        let id = app.add_pane(main, first.as_deref());
+        app.shells.get_mut(&main).unwrap().focused = id;
+        if app.st.split {
+            let second = app.st.split_file.clone();
+            app.add_pane(main, second.as_deref());
         }
-    }
-    (env, path)
-}
-
-fn main() {
-    std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
-    let (env, start_path) = parse_args();
-    let mut st = state::load(&env);
-    if let Some(p) = start_path {
-        let p = platform::normalise_path(&p);
-        if !st.roots.iter().any(|r| r.eq_ignore_ascii_case(&p)) {
-            st.roots.push(p.clone());
-            st.expanded.insert(p);
+        app.layout(main);
+        for po in app.st.popouts.clone() {
+            app.pop_out(target, po.file.as_deref(), po.window);
         }
-    }
-
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-    let proxy = event_loop.create_proxy();
-
-    render::set_roots(&st.roots);
-    let settings = state::load_settings();
-    render::set_width(&settings.doc_width);
-    let ctx = WebContext::new(Some(state::local_data_dir().join(platform::WEBVIEW_DATA)));
-
-    // The main window comes first so its id is known; the shell map gets it right after.
-    let main_window = build_window(&event_loop, st.window, LogicalSize::new(1200.0, 800.0));
-    let main = main_window.id();
-    let mut app = App {
-        env,
-        proxy,
-        ctx,
-        main,
-        shells: HashMap::new(),
-        popout_order: Vec::new(),
-        panes: HashMap::new(),
-        next_pane: 1,
-        save_at: None,
-        next_poll: Instant::now() + SCROLL_POLL,
-        last_saved: None,
-        filters: Arc::new(filters::Filters::from_state(&st, &settings)),
-        exe: update::exe_path(),
-        update_ready: false,
-        restart_at: None,
-        settings_sig: watch::signature(&state::settings_file().to_string_lossy()),
-        settings,
-        st,
-    };
-    let ui = build_ui(&mut app.ctx, &main_window, &app.proxy, Kind::Main);
-    app.shells.insert(main, Shell { kind: Kind::Main, ui, window: main_window, ui_dpr: None, panes: Vec::new(), focused: 0 });
-    let first = app.st.open_file.clone();
-    let id = app.add_pane(main, first.as_deref());
-    app.shells.get_mut(&main).unwrap().focused = id;
-    if app.st.split {
-        let second = app.st.split_file.clone();
-        app.add_pane(main, second.as_deref());
-    }
-    app.layout(main);
-    for po in app.st.popouts.clone() {
-        app.pop_out(&event_loop, po.file.as_deref(), po.window);
-    }
-    app.save_now();
-    if let Some(exe) = app.exe.clone() {
+        app.save_now();
+        if let Some(exe) = app.exe.clone() {
+            let p = app.proxy.clone();
+            update::watch(exe, move || {
+                let _ = p.send_event(UserEvent::UpdateAvailable);
+            });
+        }
         let p = app.proxy.clone();
-        update::watch(exe, move || {
-            let _ = p.send_event(UserEvent::UpdateAvailable);
+        envs::listen(&app.env, move || {
+            let _ = p.send_event(UserEvent::Activate);
         });
+        app
     }
 
-    event_loop.run(move |event, target, control_flow| {
+    fn on_event(&mut self, event: Event<'_, UserEvent>, target: &EventLoopWindowTarget<UserEvent>, control_flow: &mut ControlFlow) {
         match event {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {}
             Event::UserEvent(ev) => match ev {
                 UserEvent::Ipc(wid, s) => match serde_json::from_str::<Cmd>(&s) {
-                    Ok(cmd) => app.handle_cmd(target, wid, cmd),
+                    Ok(cmd) => self.handle_cmd(target, wid, cmd),
                     Err(e) => log(&format!("bad ipc {s}: {e}")),
                 },
                 UserEvent::Listed(msg) => {
-                    if let Some(sh) = app.shells.get(&app.main) {
+                    if let Some(sh) = self.shells.get(&self.main) {
                         let _ = sh.ui.evaluate_script(&format!("window.condor && condor.recv({msg})"));
                     }
                 }
-                UserEvent::ContentNav(id, url) => app.on_content_nav(id, &url),
-                UserEvent::PageLoaded(id, url) => app.on_page_loaded(id, &url),
-                UserEvent::Scroll(id, url, y, sel) => app.on_scroll(id, &url, y, sel),
-                UserEvent::FileChanged(id, p, deleted) => app.on_file_changed(id, &p, deleted),
-                UserEvent::ReloadAt(id, url, y) => app.on_reload_at(id, &url, y),
-                UserEvent::NoPreview(id, path) => app.on_no_preview(id, &path),
-                UserEvent::OpenWindow(url) => app.pop_out_url(target, Some(url), None),
+                UserEvent::ContentNav(id, url) => self.on_content_nav(id, &url),
+                UserEvent::PageLoaded(id, url) => self.on_page_loaded(id, &url),
+                UserEvent::Scroll(id, url, y, sel) => self.on_scroll(id, &url, y, sel),
+                UserEvent::FileChanged(id, p, deleted) => self.on_file_changed(id, &p, deleted),
+                UserEvent::ReloadAt(id, url, y) => self.on_reload_at(id, &url, y),
+                UserEvent::NoPreview(id, path) => self.on_no_preview(id, &path),
+                UserEvent::OpenWindow(url) => self.pop_out_url(target, Some(url), None),
                 UserEvent::LoadContent(id, url) => {
-                    if let Some(p) = app.panes.get(&id) {
+                    if let Some(p) = self.panes.get(&id) {
                         let _ = p.content.load_url(&url);
                     }
                 }
-                UserEvent::Focus(id) => app.set_focus(id),
+                UserEvent::Focus(id) => self.set_focus(id),
+                UserEvent::Activate => self.activate(),
+                UserEvent::Opened(..) | UserEvent::Checked(..) => {}
                 UserEvent::UpdateAvailable => {
-                    app.update_ready = true;
-                    let wids: Vec<WindowId> = app.shells.keys().copied().collect();
+                    self.update_ready = true;
+                    let wids: Vec<WindowId> = self.shells.keys().copied().collect();
                     for w in wids {
-                        app.send_ui(w, &json!({"ev": "update"}));
+                        self.send_ui(w, &json!({"ev": "update"}));
                     }
                 }
             },
             Event::WindowEvent { window_id, event, .. } => match event {
                 WindowEvent::CloseRequested => {
-                    if window_id == app.main {
-                        app.poll_scroll();
-                        app.save_now();
+                    if window_id == self.main {
+                        self.poll_scroll();
+                        self.finish();
                         *control_flow = ControlFlow::Exit;
                         return;
                     }
-                    app.close_popout(window_id);
+                    self.close_popout(window_id);
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                    app.layout(window_id);
-                    app.mark_dirty();
+                    self.layout(window_id);
+                    self.mark_dirty();
                 }
-                WindowEvent::Moved(_) => app.mark_dirty(),
+                WindowEvent::Moved(_) => self.mark_dirty(),
                 _ => {}
             },
-            Event::LoopDestroyed => app.save_now(),
+            Event::LoopDestroyed => {
+                self.save_now();
+                self.saver.flush(Duration::from_secs(5));
+            }
             _ => {}
         }
 
         let now = Instant::now();
-        if app.restart_at.map_or(false, |t| now >= t) {
-            app.restart_at = None;
-            if app.restart() {
+        if self.restart_at.map_or(false, |t| now >= t) {
+            self.restart_at = None;
+            if self.restart() {
                 *control_flow = ControlFlow::Exit;
                 return;
             }
         }
-        if now >= app.next_poll {
-            app.poll_scroll();
-            app.check_settings();
+        if now >= self.next_poll {
+            self.poll_scroll();
+            self.check_settings();
         }
-        if app.save_at.map_or(false, |t| now >= t) {
-            app.save_now();
+        if self.save_at.map_or(false, |t| now >= t) {
+            self.save_now();
         }
-        let mut wake = app.next_poll;
-        for t in [app.save_at, app.restart_at].into_iter().flatten() {
+        self.show_loading(now);
+        let mut wake = self.next_poll;
+        for p in self.panes.values() {
+            if let (Some(t), false) = (p.loading, p.loading_shown) {
+                wake = wake.min(t);
+            }
+        }
+        for t in [self.save_at, self.restart_at].into_iter().flatten() {
             wake = wake.min(t);
         }
         *control_flow = ControlFlow::WaitUntil(wake);
+    }
+
+    /// Say "loading" in the bar of panes whose document is slow to arrive.
+    fn show_loading(&mut self, now: Instant) {
+        let due: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|(_, p)| !p.loading_shown && p.loading.map_or(false, |t| now >= t))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.loading_shown = true;
+            }
+            self.send_pane_state(id);
+        }
+    }
+
+    /// Another start of this environment: bring the main window to the front.
+    fn activate(&mut self) {
+        if let Some(sh) = self.shells.get(&self.main) {
+            sh.window.set_visible(true);
+            sh.window.set_minimized(false);
+            sh.window.set_focus();
+        }
+    }
+
+    /// Save, wait for the write, and give up the environment (on exit and restart).
+    fn finish(&mut self) {
+        self.save_now();
+        self.saver.flush(Duration::from_secs(5));
+        envs::touch_recent(&self.env);
+        envs::unregister(&self.env);
+    }
+}
+
+/// Before an environment is open: the selector window, and loading the chosen state on a
+/// worker thread (a folder on a slow share shows "waiting", with a way back to the list).
+struct Starter {
+    picker: Option<Picker>,
+    /// The folder a new environment can be made in (the current folder, if a real one).
+    here: Option<String>,
+    note: Option<String>,
+    gen: u64,
+    /// The environment being loaded: request number, which, when to show "waiting".
+    pending: Option<(u64, envs::Env, Instant)>,
+}
+
+struct Picker {
+    // Field order: the webview is dropped before its window.
+    web: WebView,
+    #[allow(dead_code)]
+    window: Window,
+}
+
+enum Phase {
+    Start(Starter, WebContext),
+    Run(App),
+    Switching,
+}
+
+fn waiting_msg(e: &envs::Env) -> serde_json::Value {
+    let place = e.folder.clone().unwrap_or_else(|| e.state_file.to_string_lossy().into_owned());
+    json!({"ev": "waiting", "name": envs::display_name(e), "place": place})
+}
+
+impl Starter {
+    fn show(&mut self, target: &EventLoopWindowTarget<UserEvent>, ctx: &mut WebContext, proxy: &EventLoopProxy<UserEvent>) {
+        if self.picker.is_some() {
+            return;
+        }
+        let window = WindowBuilder::new()
+            .with_title("Condor")
+            .with_inner_size(LogicalSize::new(640.0, 500.0))
+            .build(target)
+            .expect("create window");
+        if let Some(m) = window.current_monitor() {
+            let (mp, ms, ws) = (m.position(), m.size(), window.outer_size());
+            window.set_outer_position(PhysicalPosition::new(
+                mp.x + (ms.width as i32 - ws.width as i32) / 2,
+                mp.y + (ms.height as i32 - ws.height as i32) / 3,
+            ));
+        }
+        let waiting = self.pending.as_ref().map(|(_, e, _)| waiting_msg(e));
+        let init = json!({"items": envs::known(), "here": self.here, "note": self.note, "waiting": waiting});
+        let (wid, p) = (window.id(), proxy.clone());
+        let web = platform::tune_ui_webview(WebViewBuilder::new_with_web_context(ctx))
+            .with_html(PICKER_HTML)
+            .with_initialization_script(format!("window.PICKER_INIT = {init};"))
+            .with_navigation_handler(|url| url.starts_with("about:") || url.starts_with("data:"))
+            .with_ipc_handler(move |req| {
+                let _ = p.send_event(UserEvent::Ipc(wid, req.into_body()));
+            })
+            .build(&window)
+            .expect("create selector");
+        self.picker = Some(Picker { web, window });
+    }
+
+    fn send(&self, msg: &serde_json::Value) {
+        if let Some(pk) = &self.picker {
+            let _ = pk.web.evaluate_script(&format!("window.picker && picker.recv({msg})"));
+        }
+    }
+
+    /// Start loading `env`; false if it is already open in another Condor (now in front).
+    fn begin(&mut self, env: envs::Env, proxy: &EventLoopProxy<UserEvent>) -> bool {
+        if envs::activate_existing(&env) {
+            return false;
+        }
+        self.gen += 1;
+        let g = self.gen;
+        self.send(&waiting_msg(&env));
+        self.pending = Some((g, env.clone(), Instant::now() + WAIT_SHOWN_AFTER));
+        let p = proxy.clone();
+        std::thread::spawn(move || {
+            let _ = p.send_event(UserEvent::Opened(g, envs::open(env)));
+        });
+        true
+    }
+
+    /// A message from the selector page; false to quit.
+    fn on_ipc(&mut self, s: &str, proxy: &EventLoopProxy<UserEvent>) -> bool {
+        let v: serde_json::Value = serde_json::from_str(s).unwrap_or_default();
+        let state = v["state"].as_str().unwrap_or_default().to_string();
+        match v["cmd"].as_str().unwrap_or_default() {
+            "ready" => {
+                // Mark environments whose folder can't be reached (each checked separately,
+                // so one slow share doesn't hold up the rest).
+                for k in envs::known() {
+                    let Some(f) = k.folder else { continue };
+                    let p = proxy.clone();
+                    std::thread::spawn(move || {
+                        let ok = std::path::Path::new(&f).is_dir();
+                        let _ = p.send_event(UserEvent::Checked(k.state, ok));
+                    });
+                }
+            }
+            "open" if !state.is_empty() => return self.begin(envs::from_state_path(&state), proxy),
+            "new" => {
+                if let Some(h) = self.here.clone() {
+                    return self.begin(envs::folder_env(&h), proxy);
+                }
+            }
+            "browse" => {
+                if let Some(f) = platform::pick_folder("Folder for the new Condor environment") {
+                    return self.begin(envs::folder_env(&f.to_string_lossy()), proxy);
+                }
+            }
+            "forget" => envs::forget(&state),
+            "cancel" => {
+                self.pending = None;
+                self.send(&json!({"ev": "back"}));
+            }
+            "quit" => return false,
+            _ => {}
+        }
+        true
+    }
+}
+
+fn main() {
+    std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
+    let args = envs::parse_args();
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+    let mut ctx = WebContext::new(Some(state::local_data_dir().join(platform::WEBVIEW_DATA)));
+    let mut starter = Starter { picker: None, here: None, note: None, gen: 0, pending: None };
+    match envs::choose(&args) {
+        envs::Choice::Env(e) => {
+            if !starter.begin(e, &proxy) {
+                return; // already open in another window, now in front
+            }
+        }
+        envs::Choice::Select { here } => {
+            starter.here = here;
+            starter.show(&event_loop, &mut ctx, &proxy);
+        }
+    }
+
+    let mut phase = Phase::Start(starter, ctx);
+    event_loop.run(move |event, target, control_flow| {
+        if let Phase::Run(app) = &mut phase {
+            app.on_event(event, target, control_flow);
+            return;
+        }
+        let Phase::Start(st, ctx) = &mut phase else { return };
+        let mut quit = false;
+        let mut ready = None;
+        match event {
+            Event::UserEvent(UserEvent::Ipc(_, s)) => quit = !st.on_ipc(&s, &proxy),
+            Event::UserEvent(UserEvent::Checked(state, ok)) => st.send(&json!({"ev": "check", "state": state, "ok": ok})),
+            Event::UserEvent(UserEvent::Opened(g, r)) if st.pending.as_ref().map_or(false, |p| p.0 == g) => {
+                st.pending = None;
+                match r {
+                    envs::Opened::Ready(env, state) => ready = Some((env, state)),
+                    envs::Opened::Gone(env) => {
+                        let f = env.folder.clone().unwrap_or_default();
+                        st.note = Some(format!("The folder for \u{201c}{}\u{201d} isn't available: {f}", envs::display_name(&env)));
+                        if st.picker.is_some() {
+                            st.send(&json!({"ev": "back", "note": st.note}));
+                        } else {
+                            st.show(target, ctx, &proxy);
+                        }
+                    }
+                }
+            }
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => quit = true,
+            _ => {}
+        }
+        if quit {
+            *control_flow = ControlFlow::Exit;
+            return;
+        }
+        if let Some((env, state)) = ready {
+            // A file argument may have turned out to belong to an environment already open.
+            if envs::activate_existing(&env) {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+            let Phase::Start(_, ctx) = std::mem::replace(&mut phase, Phase::Switching) else { unreachable!() };
+            // The selector (if any) is dropped with the start phase.
+            phase = Phase::Run(App::start(target, ctx, proxy.clone(), env, state));
+            *control_flow = ControlFlow::WaitUntil(Instant::now() + SCROLL_POLL);
+            return;
+        }
+        // Still loading after a moment: show the waiting window (with a way out).
+        let show_at = st.pending.as_ref().filter(|_| st.picker.is_none()).map(|p| p.2);
+        match show_at {
+            Some(t) if Instant::now() >= t => {
+                st.show(target, ctx, &proxy);
+                *control_flow = ControlFlow::Wait;
+            }
+            Some(t) => *control_flow = ControlFlow::WaitUntil(t),
+            None => *control_flow = ControlFlow::Wait,
+        }
     });
 }

@@ -56,6 +56,8 @@ fn xdg(var: &str, default: &str) -> PathBuf {
     std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home().join(default))
 }
 
+pub fn allow_foreground(_pid: u32) {}
+
 pub fn config_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
         home().join("Library/Application Support/Condor")

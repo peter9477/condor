@@ -49,15 +49,32 @@ The exe is about 1 MB.
 ## Usage
 
 ```
-condor.exe [--env NAME] [FOLDER]
+condor.exe [FOLDER | FILE]
+condor.exe --env NAME [FOLDER]
+condor.exe --state FILE [FOLDER]
 ```
 
-| Option | Meaning |
-|---|---|
-| `FOLDER` | Add this folder as a root (if it isn't one already). |
-| `--env NAME` | Use the named environment (default: `default`). |
+An *environment* is a saved state: roots, expanded folders, open files, splits, pop-outs,
+tags, scroll positions, window placement.
 
-State is saved in `%APPDATA%\Condor\environments\NAME.json`.
+| Start | Environment |
+|---|---|
+| `condor FOLDER` (e.g. `condor .`) | The folder's own, in `FOLDER\.condor\state.json`; created if needed, with the folder as its root. `.condor` holds a `.gitignore` of `*`, so git ignores it. |
+| `condor FILE` | The nearest folder above the file that has an environment (else the file's folder), showing the file. |
+| `condor` in a folder with `.condor` | That folder's. |
+| `condor` anywhere else, or from the Start menu | A selector: known environments, most recently used first (Enter opens the top one), a new one in the current folder, or one in a folder you pick. |
+| `--env NAME` | A named one in `%APPDATA%\Condor\environments\NAME.json`. |
+| `--state FILE` | The state kept in FILE. |
+
+With `--env` or `--state`, a `FOLDER` is added to that environment as a root.
+
+Each environment opens in one window: starting it again brings that window to the front.
+A folder that is slow to answer (a network share) shows a waiting window you can leave
+for the list; a missing one returns to the list with a note. Documents slow to arrive
+show "loading…" in their pane's bar while everything else stays usable.
+
+Settings shared by all windows are in `%APPDATA%\Condor\settings.json` (or the file named
+by `CONDOR_SETTINGS`; instances started that way don't change the recent list).
 
 ## Building
 

@@ -74,6 +74,14 @@ pub fn scheme_origin(scheme: &str) -> String {
     format!("http://{scheme}.localhost")
 }
 
+/// Let process `pid` bring its window to the front (we were just started by the user, so
+/// we may; it may not on its own).
+pub fn allow_foreground(pid: u32) {
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid);
+    }
+}
+
 pub fn config_dir() -> PathBuf {
     std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join("Condor")
 }
