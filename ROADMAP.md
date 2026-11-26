@@ -3,10 +3,18 @@
 Ideas recorded for later; none of these are implemented yet.
 
 ## Viewing
-- Syntax highlighting for source files.
 - Tree auto-refresh (today a folder is re-listed when expanded or on F5 / ↻).
 - Editable list of "viewable" extensions in the filter panel (stored as `viewable_exts`
   in the environment file; edit the JSON by hand for now).
+
+- Split view: two or more document panes side by side or stacked, each with its own
+  history and change banner; the tree opens into the focused pane.
+
+## Tags and stars
+- Tag files and folders with short words, shown as badges in the tree; a star is a
+  special tag shown as ★. Stored by path in the environment state.
+- Filter the tree to one or more tags: tagged items plus the folders leading to them,
+  built from the stored paths, so no folder needs scanning.
 
 ## Environments and windows
 - Environment selector UI (state is already one file per environment; `--env NAME` works).
