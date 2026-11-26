@@ -451,3 +451,68 @@ pub fn window_handle(w: &tao::window::Window) -> isize {
     use tao::platform::windows::WindowExtWindows;
     w.hwnd() as isize
 }
+
+/// A Windows metafile picture (EMF/WMF, as Office documents embed them; browsers can't show
+/// them) drawn into a PNG by GDI+, about 2000 px on its longer side, on white.
+pub fn metafile_to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::Win32::Graphics::GdiPlus::*;
+    use windows::Win32::System::Com::STREAM_SEEK_SET;
+    use windows::Win32::UI::Shell::SHCreateMemStream;
+    static STARTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let ok = *STARTED.get_or_init(|| unsafe {
+        let mut token = 0usize;
+        let input = GdiplusStartupInput { GdiplusVersion: 1, ..Default::default() };
+        GdiplusStartup(&mut token, &input, std::ptr::null_mut()) == Ok
+    });
+    if !ok {
+        return Err("GDI+ didn't start".into());
+    }
+    let check = |s: Status, what: &str| if s == Ok { std::result::Result::Ok(()) } else { Err(format!("{what} failed ({})", s.0)) };
+    unsafe {
+        let input = SHCreateMemStream(Some(bytes)).ok_or("no memory stream")?;
+        let mut img: *mut GpImage = std::ptr::null_mut();
+        check(GdipLoadImageFromStream(&input, &mut img), "reading the picture")?;
+        struct Img(*mut GpImage);
+        impl Drop for Img {
+            fn drop(&mut self) {
+                unsafe { GdipDisposeImage(self.0) };
+            }
+        }
+        let img = Img(img);
+        let mut r = RectF::default();
+        let mut unit = Unit::default();
+        check(GdipGetImageBounds(img.0, &mut r, &mut unit), "measuring the picture")?;
+        if !(r.Width > 0.0 && r.Height > 0.0) {
+            return Err("empty picture".into());
+        }
+        let scale = (2000.0 / r.Width.max(r.Height)).clamp(0.25, 8.0);
+        let (w, h) = (((r.Width * scale).round() as i32).max(1), ((r.Height * scale).round() as i32).max(1));
+        let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+        check(GdipCreateBitmapFromScan0(w, h, 0, 0x26200A /* PixelFormat32bppARGB */, None, &mut bmp), "making a bitmap")?;
+        let bmp = Img(bmp as *mut GpImage);
+        let mut g: *mut GpGraphics = std::ptr::null_mut();
+        check(GdipGetImageGraphicsContext(bmp.0, &mut g), "drawing")?;
+        GdipGraphicsClear(g, 0xFFFFFFFF);
+        GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+        GdipSetInterpolationMode(g, InterpolationModeHighQualityBicubic);
+        let drawn = GdipDrawImageRectI(g, img.0, 0, 0, w, h);
+        GdipDeleteGraphics(g);
+        check(drawn, "drawing the picture")?;
+        let out = SHCreateMemStream(None).ok_or("no memory stream")?;
+        // The PNG encoder.
+        let png = windows::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
+        check(GdipSaveImageToStream(bmp.0, &out, &png, std::ptr::null()), "saving as PNG")?;
+        out.Seek(0, STREAM_SEEK_SET, None).map_err(|e| e.to_string())?;
+        let mut data = Vec::new();
+        let mut buf = vec![0u8; 64 << 10];
+        loop {
+            let mut n = 0u32;
+            let _ = out.Read(buf.as_mut_ptr().cast(), buf.len() as u32, Some(&mut n));
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n as usize]);
+        }
+        std::result::Result::Ok(data)
+    }
+}

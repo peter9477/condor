@@ -38,15 +38,40 @@ pub fn is_docx_url(url: &str) -> bool {
     url.split('#').next().and_then(|u| u.split_once('?')).map_or(false, |(_, q)| q.split('&').any(|p| p == "docx"))
 }
 
+fn docx_media(path: &str, name: &str) -> Resp {
+    let lower = name.to_ascii_lowercase();
+    if !web_viewable(path) || name.split('/').any(|c| c == "..") || !(lower.ends_with(".emf") || lower.ends_with(".wmf")) {
+        return message(StatusCode::NOT_FOUND, "Not found", name);
+    }
+    let read = || -> Result<Vec<u8>, String> {
+        let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut a = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| e.to_string())?;
+        let mut e = a.by_name(name).map_err(|e| e.to_string())?;
+        let mut b = Vec::new();
+        e.by_ref().take(64 << 20).read_to_end(&mut b).map_err(|e| e.to_string())?;
+        crate::platform::metafile_to_png(&b)
+    };
+    match read() {
+        Ok(png) => respond(StatusCode::OK, "image/png", None, png),
+        Err(e) => message(StatusCode::NOT_FOUND, "Can't show this picture", &e),
+    }
+}
+
 fn docx_page(path: &str) -> Resp {
-    let body = format!(
-        "<style>html, body.docx-view {{ margin: 0; padding: 0; max-width: none; background: #e4e4e4; }}\
+    // Not `page()`: the document styles (doc.css) for Markdown would restyle the Word
+    // document's tables and images (e.g. `img { max-width: 100% }` hides floating pictures,
+    // which sit in zero-width boxes).
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title><style>\
+         html, body {{ margin: 0; padding: 0; background: #e4e4e4; }}\
          .docx-wrapper {{ background: transparent !important; padding: 16px !important; }}\
          .docx-wrapper > section.docx {{ box-shadow: 0 1px 4px rgba(0,0,0,.25); margin-bottom: 16px !important; }}\
-         .msg {{ padding: 24px; }}</style>\
-         <div id=\"doc\"></div><script>{JSZIP_JS}</script><script>{DOCX_PREVIEW_JS}</script><script>{DOCX_VIEW_JS}</script>"
+         .msg {{ padding: 24px; font: 14px 'Segoe UI', system-ui, sans-serif; color: #333; }}</style></head><body>\
+         <div id=\"doc\"></div><script>{JSZIP_JS}</script><script>{DOCX_PREVIEW_JS}</script><script>{DOCX_VIEW_JS}</script>\
+         </body></html>",
+        escape(file_name(path))
     );
-    respond(StatusCode::OK, "text/html; charset=utf-8", Some(DOCX_CSP), page(file_name(path), "docx-view", &body))
+    respond(StatusCode::OK, "text/html; charset=utf-8", Some(DOCX_CSP), html.into_bytes())
 }
 
 fn respond(status: StatusCode, ctype: &str, csp: Option<&str>, body: Vec<u8>) -> Resp {
@@ -244,6 +269,10 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
     }
     if query.map_or(false, |q| q.split('&').any(|p| p == "docx")) && web_viewable(&path) {
         return docx_page(&path);
+    }
+    // A Word document's metafile picture as PNG (for the built-in view; browsers can't show EMF/WMF).
+    if let Some(name) = query.and_then(|q| q.split('&').find_map(|p| p.strip_prefix("media="))) {
+        return docx_media(&path, &paths::percent_decode(name));
     }
     if source {
         return text_view(&path, &ext, meta.len());

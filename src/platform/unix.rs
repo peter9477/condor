@@ -199,3 +199,7 @@ impl Preview {
 pub fn window_handle(_w: &tao::window::Window) -> isize {
     0
 }
+
+pub fn metafile_to_png(_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    Err("metafile pictures can only be shown on Windows".into())
+}

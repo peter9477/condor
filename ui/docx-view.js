@@ -13,7 +13,19 @@
   try {
     const r = await fetch(location.pathname + "?raw");
     if (!r.ok) throw new Error(r.status + " " + r.statusText);
-    await docx.renderAsync(await r.arrayBuffer(), out, null, {
+    let data = await r.arrayBuffer();
+    // Windows metafile pictures (EMF/WMF), which browsers can't show, are swapped for PNGs
+    // that Condor draws from them.
+    const zip = await JSZip.loadAsync(data);
+    const metas = Object.keys(zip.files).filter((n) => /\.(emf|wmf)$/i.test(n));
+    if (metas.length) {
+      await Promise.all(metas.map(async (n) => {
+        const m = await fetch(location.pathname + "?media=" + encodeURIComponent(n));
+        if (m.ok) zip.file(n, await m.arrayBuffer());
+      }));
+      data = await zip.generateAsync({type: "uint8array"});
+    }
+    await docx.renderAsync(data, out, null, {
       className: "docx", inWrapper: true, breakPages: true, ignoreLastRenderedPageBreak: true,
       experimental: true, renderAltChunks: false, useBase64URL: false,
     });
