@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draws Condor's icon (an Andean condor soaring, seen from below/front) and writes
+"""Draws Condor's icon (an condor soaring, banked, seen obliquely from below) and writes
 condor.svg, condor.png (256 px) and condor.ico. Run from this folder; needs Pillow.
 Then compile condor.rc (llvm-rc condor.rc) to condor.res, which the build links in."""
 import math
@@ -27,13 +27,13 @@ def finger(root, deg, length, wmax=4.2, lift=4.0, n=10):
     return [at(T*i/n, -1) for i in range(n+1)] + cap + [at(T*i/n, 1) for i in range(n, -1, -1)]
 
 def wing():
-    """Left wing: a broad, nearly flat plank, with eight long primaries splayed at the tip."""
+    """Left wing: a broad, nearly flat plank, with five long primaries splayed at the tip."""
     arm = quad((126, 96), (90, 84), (54, 88)) + [(51, 110)] + quad((58, 136), (92, 147), (126, 147))
     fingers = []
-    for i in range(8):
-        f = i / 7
-        root = (57 + 5*f, 91 + 42*f)         # along the end of the hand
-        fingers.append(finger(root, 198 - 52*f, 48 - 18*abs(f - 0.3), wmax=3.8))  # fanning up-left to down-left,
+    for i in range(5):
+        f = i / 4
+        root = (58 + 5*f, 93 + 38*f)         # along the end of the hand
+        fingers.append(finger(root, 200 - 60*f, 50 - 20*abs(f - 0.3), wmax=4.8))  # fanning up-left to down-left,
     return [arm] + fingers                   # the rear ones shorter
 
 def patch():
@@ -62,26 +62,41 @@ def foot(x, lean):
     """A pale foot tucked back along the tail base: a slim sliver, not a dot."""
     return rot_ellipse(x, 159, 2.2, 5.5, lean)
 
-def mirror(pts):
-    return [(S - x, y) for x, y in pts]
+def far(pts, sx=0.86):
+    """Mirror a left-wing shape into the far (right) wing, foreshortened along the span."""
+    return [(128 + (128 - x)*sx, y) for x, y in pts]
+
+def near(pts, sx=1.08):
+    """The near (left) wing, a little longer than drawn."""
+    return [(128 - (128 - x)*sx, y) for x, y in pts]
 
 def polys(parts, col):
-    return [("poly", p, col) for p in parts]
+    return [(p, col) for p in parts]
+
+def pose(shapes, deg=24, fit=222):
+    """Bank the whole bird (near wing up-left, tail down-left), then centre and scale it to the badge."""
+    a = math.radians(deg)
+    turned = [([(x*math.cos(a) - y*math.sin(a), x*math.sin(a) + y*math.cos(a)) for x, y in p], col) for p, col in shapes]
+    xs = [x for p, _ in turned for x, _ in p]
+    ys = [y for p, _ in turned for _, y in p]
+    k = fit / max(max(xs) - min(xs), max(ys) - min(ys))
+    cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
+    return [([(S/2 + (x - cx)*k, S/2 + (y - cy)*k) for x, y in p], col) for p, col in turned]
 
 BG_TOP, BG_BOT = (154, 188, 226), (197, 226, 246)   # sky, lightened so the bird stands out small
 BIRD, PATCH, RUFF, HEAD = (24, 26, 31), (240, 242, 238), (46, 48, 55), (232, 146, 116)
-BEAK, FEET = (242, 232, 206), (214, 208, 198)
+BEAK, FEET = (240, 216, 160), (214, 208, 198)
 
-shapes = [  # (kind, data, colour), back to front
-    *polys(wing() + [mirror(p) for p in wing()], BIRD),
-    *polys([patch(), mirror(patch())], PATCH),
-    ("poly", tail(), BIRD),
-    ("ellipse", (128, 124, 17, 31), BIRD),                              # body
+shapes = pose([  # (polygon, colour), back to front, drawn level and then banked by pose()
+    *polys([near(p) for p in wing()] + [far(p) for p in wing()], BIRD),
+    *polys([near(patch()), far(patch())], PATCH),
+    (tail(), BIRD),
+    (rot_ellipse(128, 124, 17, 31, 0), BIRD),                          # body
     *polys([foot(123.5, 8), foot(132.5, -8)], FEET),
-    ("poly", head(), HEAD),
-    ("poly", beak(), BEAK),
-    ("ellipse", (128, 100, 14, 8), RUFF),                              # dark ruff, over the neck base
-]
+    (head(), HEAD),
+    (beak(), BEAK),
+    (rot_ellipse(128, 100, 14, 8, 0), RUFF),                           # dark ruff, over the neck base
+])
 
 def render(px):
     k = 4 * px / S
@@ -98,12 +113,8 @@ def render(px):
     ImageDraw.Draw(mask).rounded_rectangle([m, m, big - m, big - m], radius=52*k, fill=255)
     im.paste(grad, (0, 0), mask)
     d = ImageDraw.Draw(im)
-    for kind, data, col in shapes:
-        if kind == "poly":
-            d.polygon([(x*k, y*k) for x, y in data], fill=col + (255,))
-        else:
-            cx, cy, rx, ry = data
-            d.ellipse([(cx-rx)*k, (cy-ry)*k, (cx+rx)*k, (cy+ry)*k], fill=col + (255,))
+    for pts, col in shapes:
+        d.polygon([(x*k, y*k) for x, y in pts], fill=col + (255,))
     return im.resize((px, px), Image.LANCZOS)
 
 def svg():
@@ -112,12 +123,8 @@ def svg():
            '<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">'
            f'<stop offset="0" stop-color="{hexc(BG_TOP)}"/><stop offset="1" stop-color="{hexc(BG_BOT)}"/></linearGradient></defs>',
            '<rect x="6" y="6" width="244" height="244" rx="52" fill="url(#sky)"/>']
-    for kind, data, col in shapes:
-        if kind == "poly":
-            out.append(f'<polygon fill="{hexc(col)}" points="' + " ".join(f"{x:.1f},{y:.1f}" for x, y in data) + '"/>')
-        else:
-            cx, cy, rx, ry = data
-            out.append(f'<ellipse fill="{hexc(col)}" cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}"/>')
+    for pts, col in shapes:
+        out.append(f'<polygon fill="{hexc(col)}" points="' + " ".join(f"{x:.1f},{y:.1f}" for x, y in pts) + '"/>')
     out.append("</svg>")
     return "\n".join(out) + "\n"
 
