@@ -41,9 +41,25 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 .row .x:hover { color: var(--fg); }
 .note { color: var(--muted); font-style: italic; }
 .err { color: #cf222e; font-style: italic; }
-.hidden { display: none; }
+.hidden { display: none !important; }
 #empty { padding: 24px 16px; color: var(--muted); }
 #empty button { margin-top: 8px; font: inherit; padding: 4px 10px; }
+#fpanel { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+#fpanel label { display: flex; align-items: center; gap: 6px; }
+#fpanel .flabel { margin-top: 4px; color: var(--muted); }
+#fpanel textarea { width: 100%; font: 12px ui-monospace, Consolas, monospace; resize: vertical; background: var(--bg);
+  color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px; user-select: text; }
+#fpanel .fbtns { display: flex; justify-content: flex-end; }
+#fpanel button { font: inherit; padding: 2px 12px; }
+#banner { position: absolute; left: calc(var(--w) + 5px); right: 0; top: 0; height: 34px; display: flex; align-items: center;
+  gap: 8px; padding: 0 10px; background: #fff8c5; color: #3b2300; border-bottom: 1px solid #d4a72c; white-space: nowrap; overflow: hidden; }
+@media (prefers-color-scheme: dark) { #banner { background: #3a2f0b; color: #f2e3b3; border-color: #9e6a03; } }
+#banner .msg { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+#banner button { font: inherit; padding: 2px 10px; border-radius: 4px; border: 1px solid #bf8700; background: transparent; color: inherit; cursor: pointer; }
+#banner button:hover { background: rgba(191,135,0,.2); }
+#banner .close { margin-left: auto; border: 0; font-size: 16px; padding: 0 6px; }
+#bar #auto { font-size: 11px; width: auto; padding: 0 5px; }
+#bar #auto:disabled { opacity: .35; cursor: default; }
 .dragover > .row { box-shadow: inset 0 2px 0 var(--cursor); }
 </style>
 </head>
@@ -51,13 +67,28 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 <div id="side">
   <div id="bar">
     <span class="title" id="envname">Condor</span>
-    <button id="filter" title="Hide git-ignored files">&#x2298;</button>
+    <button id="auto" title="Reload the open file automatically when it changes" disabled>AUTO</button>
+    <button id="filter" title="Filters: hidden files, file types, exclusions">&#x29e9;</button>
     <button id="add" title="Add a folder (root)">+</button>
     <button id="reload" title="Reload the open file (F5)">&#x21bb;</button>
+  </div>
+  <div id="fpanel" class="hidden">
+    <label><input type="checkbox" id="f-hidden"> Show hidden files (dot files)</label>
+    <label><input type="checkbox" id="f-ignored"> Hide git-ignored files</label>
+    <label><input type="checkbox" id="f-viewable"> Only viewable file types</label>
+    <div class="flabel">Exclude (one pattern per line, .gitignore syntax):</div>
+    <textarea id="f-excludes" rows="4" spellcheck="false" placeholder="node_modules/&#10;target/&#10;*.lock"></textarea>
+    <div class="fbtns"><button id="f-apply">Apply</button></div>
   </div>
   <div id="tree" tabindex="0"></div>
 </div>
 <div id="split"></div>
+<div id="banner" class="hidden">
+  <span class="msg" id="bmsg"></span>
+  <button id="breload">Reload</button>
+  <button id="bauto" title="Reload this file automatically from now on">Always auto-reload this file</button>
+  <button class="close" id="bclose" title="Keep viewing this version">&#x00d7;</button>
+</div>
 <script>
 "use strict";
 const post = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -325,13 +356,52 @@ tree.addEventListener("drop", (e) => {
 });
 tree.addEventListener("dragend", () => { dragRoot = null; });
 
-const filterBtn = document.getElementById("filter");
-let hideIgnored = false;
-function showFilter() {
-  filterBtn.classList.toggle("on", hideIgnored);
-  filterBtn.title = hideIgnored ? "Git-ignored files are hidden (click to show them)" : "Hide git-ignored files";
+// Changed-on-disk banner and per-file auto-reload.
+const banner = document.getElementById("banner");
+const autoBtn = document.getElementById("auto");
+let autoOn = false;
+function showAuto() {
+  autoBtn.disabled = !selected;
+  autoBtn.classList.toggle("on", autoOn);
+  autoBtn.title = autoOn ? "This file reloads automatically when it changes (click to stop)"
+                         : "Reload the open file automatically when it changes";
 }
-filterBtn.onclick = () => post({cmd: "hideIgnored", hide: !hideIgnored});
+autoBtn.onclick = () => { if (selected) post({cmd: "autoReload", path: selected, on: !autoOn}); };
+document.getElementById("breload").onclick = () => post({cmd: "reload"});
+document.getElementById("bauto").onclick = () => { if (selected) post({cmd: "autoReload", path: selected, on: true}); };
+document.getElementById("bclose").onclick = () => post({cmd: "dismiss"});
+function showBanner(msg) {
+  banner.classList.toggle("hidden", !msg.show);
+  if (!msg.show) return;
+  const name = baseName(msg.path);
+  document.getElementById("bmsg").textContent = msg.deleted
+    ? name + " was deleted or moved. You are viewing the last version loaded."
+    : name + " has changed on disk.";
+  document.getElementById("breload").classList.toggle("hidden", !!msg.deleted);
+  document.getElementById("bauto").classList.toggle("hidden", !!msg.deleted);
+}
+
+const filterBtn = document.getElementById("filter");
+const fpanel = document.getElementById("fpanel");
+let filters = {showHidden: false, hideIgnored: false, viewableOnly: false, excludes: []};
+function showFilter() {
+  const active = filters.showHidden || filters.hideIgnored || filters.viewableOnly || filters.excludes.length > 0;
+  filterBtn.classList.toggle("on", active);
+  document.getElementById("f-hidden").checked = filters.showHidden;
+  document.getElementById("f-ignored").checked = filters.hideIgnored;
+  document.getElementById("f-viewable").checked = filters.viewableOnly;
+  document.getElementById("f-excludes").value = filters.excludes.join("\n");
+}
+function sendFilters() {
+  post({cmd: "setFilters",
+        show_hidden: document.getElementById("f-hidden").checked,
+        hide_ignored: document.getElementById("f-ignored").checked,
+        viewable_only: document.getElementById("f-viewable").checked,
+        excludes: document.getElementById("f-excludes").value.split(/\r?\n/)});
+}
+filterBtn.onclick = () => fpanel.classList.toggle("hidden");
+for (const id of ["f-hidden", "f-ignored", "f-viewable"]) document.getElementById(id).onchange = sendFilters;
+document.getElementById("f-apply").onclick = sendFilters;
 function relistAll() {
   for (const [p, n] of nodes) if (n.dataset.dir && loaded.has(p)) post({cmd: "list", path: p});
 }
@@ -375,7 +445,7 @@ window.condor = {
         reveal = !!selected;
         roots = msg.roots;
         setWidth(msg.sidebar);
-        hideIgnored = !!msg.hideIgnored; showFilter();
+        filters = msg.filters; showFilter();
         lastDpr = devicePixelRatio;
         post({cmd: "sidebar", width: msg.sidebar, dpr: devicePixelRatio});
         document.getElementById("envname").textContent = msg.env === "default" ? "Condor" : msg.env;
@@ -387,8 +457,10 @@ window.condor = {
         renderRoots();
         break;
       case "list": onList(msg); break;
-      case "selected": select(msg.path); break;
-      case "filter": hideIgnored = msg.hideIgnored; showFilter(); relistAll(); break;
+      case "selected": select(msg.path); autoOn = !!msg.auto; showAuto(); break;
+      case "auto": if (msg.path === selected) { autoOn = msg.on; showAuto(); } break;
+      case "banner": showBanner(msg); break;
+      case "filter": filters = msg.filters; showFilter(); relistAll(); break;
     }
   }
 };

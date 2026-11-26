@@ -43,3 +43,16 @@ channel to the app. Rendered Markdown and text get a Content-Security-Policy tha
 ## Licence
 
 MIT or Apache-2.0, at your option.
+
+## Filters and file changes
+
+- The filter button (⧩) opens a panel with these options:
+  - Show hidden files (dot files and the Windows hidden attribute; off by default).
+  - Hide git-ignored files.
+  - Only viewable file types (folders and extensionless files always show).
+  - Exclude patterns in .gitignore syntax, relative to each root.
+- Open files are read in one go and never held open, so other programs can edit, move or delete them.
+- When the open file changes on disk, a banner offers Reload, and you keep seeing the old version until you choose it.
+  **AUTO** (or "Always auto-reload this file") makes that file reload by itself, keeping the scroll position.
+
+See [ROADMAP.md](ROADMAP.md) for planned features.

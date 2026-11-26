@@ -32,6 +32,15 @@ pub struct EnvState {
     pub window: Option<WinGeom>,
     /// Hide files and folders ignored by git (.gitignore).
     pub hide_ignored: bool,
+    /// Show dot files and files with the Windows hidden attribute.
+    pub show_hidden: bool,
+    /// Show only files with a viewable extension (folders are always shown).
+    pub viewable_only: bool,
+    pub viewable_exts: Vec<String>,
+    /// Exclude patterns (gitignore syntax, relative to each root).
+    pub excludes: Vec<String>,
+    /// Files that reload automatically when they change on disk.
+    pub auto_reload: BTreeSet<String>,
 }
 
 impl Default for EnvState {
@@ -45,6 +54,11 @@ impl Default for EnvState {
             sidebar_width: 300.0,
             window: None,
             hide_ignored: false,
+            auto_reload: BTreeSet::new(),
+            show_hidden: false,
+            viewable_only: false,
+            viewable_exts: crate::filters::DEFAULT_VIEWABLE.iter().map(|s| s.to_string()).collect(),
+            excludes: Vec::new(),
         }
     }
 }

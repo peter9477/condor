@@ -6,13 +6,16 @@
 //!   * the content webview (right): shows documents, untrusted, with no IPC at all.
 
 mod paths;
+mod filters;
 mod gitfilter;
 mod render;
 mod state;
+mod watch;
 
 use serde::Deserialize;
 use serde_json::json;
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
@@ -25,6 +28,8 @@ use wry::{PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder};
 use wry::WebViewBuilderExtWindows;
 
 const SPLITTER: f64 = 5.0;
+/// Height (UI CSS px) of the "file changed" banner above the content view.
+const BANNER: f64 = 34.0;
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 const SCROLL_POLL: Duration = Duration::from_millis(1500);
 
@@ -44,6 +49,10 @@ enum UserEvent {
     Scroll(String, f64),
     /// Load this URL in the content webview (e.g. a target=_blank link to a local file).
     LoadContent(String),
+    /// The open file changed on disk: (path, deleted).
+    FileChanged(String, bool),
+    /// Reload the content view, first recording this scroll position for the file.
+    ReloadAt(String, f64),
 }
 
 #[derive(Deserialize, Debug)]
@@ -58,7 +67,9 @@ enum Cmd {
     RemoveRoot { path: String },
     MoveRoot { path: String, to: usize },
     Reload,
-    HideIgnored { hide: bool },
+    Dismiss,
+    AutoReload { path: String, on: bool },
+    SetFilters { show_hidden: bool, hide_ignored: bool, viewable_only: bool, excludes: Vec<String> },
 }
 
 struct App {
@@ -76,6 +87,10 @@ struct App {
     last_saved: Option<state::EnvState>,
     /// Device pixel ratio of the UI webview, as it reports it.
     ui_dpr: Option<f64>,
+    watcher: watch::Watcher,
+    filters: Arc<filters::Filters>,
+    /// The "file changed on disk" banner is showing.
+    banner: bool,
 }
 
 fn log(msg: &str) {
@@ -105,23 +120,39 @@ fn open_external(url: &str) {
 }
 
 /// Read a directory on a worker thread and report back.
-fn list_dir(path: String, hide_ignored: bool, proxy: EventLoopProxy<UserEvent>) {
+fn hidden_attr(_e: &std::fs::DirEntry) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        // Cheap on Windows: the attributes come with the directory listing.
+        return _e.metadata().map_or(false, |m| m.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0);
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// Read a directory on a worker thread and report back.
+fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
-        let filter = if hide_ignored { gitfilter::Filter::new(std::path::Path::new(&path)) } else { None };
         let msg = match std::fs::read_dir(&path) {
             Ok(rd) => {
+                let keep = filters.for_dir(&path);
                 let mut entries: Vec<(bool, String, String)> = rd
                     .filter_map(|e| e.ok())
-                    .map(|e| {
+                    .filter_map(|e| {
                         let ft = e.file_type().ok();
                         let mut is_dir = ft.map(|t| t.is_dir()).unwrap_or(false);
                         if ft.map(|t| t.is_symlink()).unwrap_or(false) {
                             is_dir = e.path().is_dir();
                         }
-                        let p = e.path().to_string_lossy().into_owned();
-                        (is_dir, e.file_name().to_string_lossy().into_owned(), p)
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        let p = e.path();
+                        if !keep.keep(&p, &name, is_dir, hidden_attr(&e)) {
+                            return None;
+                        }
+                        Some((is_dir, name, p.to_string_lossy().into_owned()))
                     })
-                    .filter(|(d, _, p)| filter.as_ref().map_or(true, |f| !f.is_ignored(std::path::Path::new(p), *d)))
                     .collect();
                 entries.sort_by(|a, b| {
                     b.0.cmp(&a.0)
@@ -210,15 +241,29 @@ impl App {
             size: PhysicalSize::new(size.width, size.height).into(),
         });
         let x = (((self.st.sidebar_width + SPLITTER) * dpr).round() as u32).min(size.width);
+        let y = if self.banner { ((BANNER * dpr).round() as u32).min(size.height) } else { 0 };
         let _ = self.content.set_bounds(Rect {
-            position: PhysicalPosition::new(x as i32, 0).into(),
-            size: PhysicalSize::new(size.width - x, size.height).into(),
+            position: PhysicalPosition::new(x as i32, y as i32).into(),
+            size: PhysicalSize::new(size.width - x, size.height - y).into(),
         });
     }
 
     fn open_file(&mut self, path: &str) {
         let url = paths::path_to_url(path);
         let _ = self.content.load_url(&url);
+    }
+
+    fn filter_state(&self) -> serde_json::Value {
+        json!({
+            "showHidden": self.st.show_hidden,
+            "hideIgnored": self.st.hide_ignored,
+            "viewableOnly": self.st.viewable_only,
+            "excludes": self.st.excludes,
+        })
+    }
+
+    fn rebuild_filters(&mut self) {
+        self.filters = Arc::new(filters::Filters::from_state(&self.st));
     }
 
     fn init_message(&self) -> serde_json::Value {
@@ -229,14 +274,14 @@ impl App {
             "expanded": self.st.expanded,
             "selected": self.st.open_file,
             "sidebar": self.st.sidebar_width,
-            "hideIgnored": self.st.hide_ignored,
+            "filters": self.filter_state(),
         })
     }
 
     fn handle_cmd(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Ready => self.send_ui(&self.init_message()),
-            Cmd::List { path } => list_dir(path, self.st.hide_ignored, self.proxy.clone()),
+            Cmd::List { path } => list_dir(path, self.filters.clone(), self.proxy.clone()),
             Cmd::Open { path } => self.open_file(&path),
             Cmd::Expand { path, open } => {
                 let changed = if open { self.st.expanded.insert(path) } else { self.st.expanded.remove(&path) };
@@ -268,6 +313,7 @@ impl App {
             }
             Cmd::RemoveRoot { path } => {
                 self.st.roots.retain(|r| r != &path);
+                self.rebuild_filters();
                 // Forget saved expansion under that root, so re-adding starts fresh.
                 let prefix = format!("{}\\", path.trim_end_matches('\\'));
                 self.st.expanded.retain(|e| e != &path && !e.starts_with(&prefix));
@@ -283,14 +329,27 @@ impl App {
                     self.mark_dirty();
                 }
             }
-            Cmd::HideIgnored { hide } => {
-                self.st.hide_ignored = hide;
+            Cmd::SetFilters { show_hidden, hide_ignored, viewable_only, excludes } => {
+                self.st.show_hidden = show_hidden;
+                self.st.hide_ignored = hide_ignored;
+                self.st.viewable_only = viewable_only;
+                self.st.excludes = excludes.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
                 gitfilter::clear_cache();
+                self.rebuild_filters();
                 self.mark_dirty();
-                self.send_ui(&json!({"ev": "filter", "hideIgnored": hide}));
+                self.send_ui(&json!({"ev": "filter", "filters": self.filter_state()}));
             }
-            Cmd::Reload => {
-                let _ = self.content.reload();
+            Cmd::Reload => self.reload_keep_scroll(),
+            Cmd::Dismiss => self.set_banner(false),
+            Cmd::AutoReload { path, on } => {
+                let changed = if on { self.st.auto_reload.insert(path.clone()) } else { self.st.auto_reload.remove(&path) };
+                if changed {
+                    self.mark_dirty();
+                }
+                if on && self.banner && self.current.as_deref() == Some(path.as_str()) {
+                    self.reload_keep_scroll();
+                }
+                self.send_ui(&json!({"ev": "auto", "path": path, "on": on}));
             }
         }
     }
@@ -300,6 +359,7 @@ impl App {
         if !self.st.roots.iter().any(|r| r.eq_ignore_ascii_case(&p)) {
             self.st.roots.push(p.clone());
             self.st.expanded.insert(p);
+            self.rebuild_filters();
             self.send_ui(&json!({"ev": "roots", "roots": self.st.roots, "expanded": self.st.expanded}));
             self.mark_dirty();
         }
@@ -309,6 +369,7 @@ impl App {
         let path = paths::url_to_path(url);
         if path != self.current {
             self.current = path.clone();
+            self.set_banner(false);
             self.restoring = self.current.as_ref().map_or(false, |p| self.st.scroll.contains_key(p));
         }
         let title = match &path {
@@ -320,7 +381,57 @@ impl App {
             self.st.open_file = path.clone();
             self.mark_dirty();
         }
-        self.send_ui(&json!({"ev": "selected", "path": path}));
+        let auto = path.as_ref().map_or(false, |p| self.st.auto_reload.contains(p));
+        self.send_ui(&json!({"ev": "selected", "path": path, "auto": auto}));
+    }
+
+    fn set_banner(&mut self, on: bool) {
+        if self.banner != on {
+            self.banner = on;
+            self.layout();
+            if !on {
+                self.send_ui(&json!({"ev": "banner", "show": false}));
+            }
+        }
+    }
+
+    /// Reload the content view, keeping the reader's scroll position.
+    fn reload_keep_scroll(&mut self) {
+        self.set_banner(false);
+        self.watcher.reset();
+        let proxy = self.proxy.clone();
+        let fallback = self.proxy.clone();
+        let r = self.content.evaluate_script_with_callback("[location.href, window.scrollY]", move |res| {
+            let v: serde_json::Value = serde_json::from_str(&res).unwrap_or_default();
+            let url = v.get(0).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let y = v.get(1).and_then(|x| x.as_f64()).unwrap_or(-1.0);
+            let _ = proxy.send_event(UserEvent::ReloadAt(url, y));
+        });
+        if r.is_err() {
+            let _ = fallback.send_event(UserEvent::ReloadAt(String::new(), -1.0));
+        }
+    }
+
+    fn on_reload_at(&mut self, url: &str, y: f64) {
+        if let (Some(p), true) = (paths::url_to_path(url), y >= 0.0 && y.is_finite()) {
+            if Some(&p) == self.current.as_ref() {
+                self.st.set_scroll(&p, y.round());
+                self.restoring = true;
+            }
+        }
+        let _ = self.content.reload();
+    }
+
+    fn on_file_changed(&mut self, path: &str, deleted: bool) {
+        if Some(path) != self.current.as_deref() {
+            return;
+        }
+        if !deleted && self.st.auto_reload.contains(path) {
+            self.reload_keep_scroll();
+            return;
+        }
+        self.set_banner(true);
+        self.send_ui(&json!({"ev": "banner", "show": true, "path": path, "deleted": deleted}));
     }
 
     fn on_page_loaded(&mut self, url: &str) {
@@ -458,6 +569,12 @@ fn main() {
 
 
     // Content webview: untrusted documents, no IPC.
+    let p_watch = proxy.clone();
+    let watcher = watch::Watcher::start(move |path, deleted| {
+        let _ = p_watch.send_event(UserEvent::FileChanged(path, deleted));
+    });
+    let w_serve = watcher.clone();
+    let w_nav = watcher.clone();
     let p_nav = proxy.clone();
     let p_load = proxy.clone();
     let p_new = proxy.clone();
@@ -466,14 +583,19 @@ fn main() {
     let initial = st.open_file.as_deref().map(paths::path_to_url).unwrap_or_else(|| format!("{file_origin}/"));
     let content_builder = WebViewBuilder::new_with_web_context(&mut ctx)
         .with_url(format!("{}://localhost{}", paths::FILE_SCHEME, initial.strip_prefix(&file_origin).unwrap_or("/")))
-        .with_asynchronous_custom_protocol(paths::FILE_SCHEME.into(), |_id, req, responder| {
+        .with_asynchronous_custom_protocol(paths::FILE_SCHEME.into(), move |_id, req, responder| {
             let uri = req.uri().clone();
+            let w = w_serve.clone();
             std::thread::spawn(move || {
+                if let Some(p) = paths::url_path_to_path(uri.path()) {
+                    w.served(&p, watch::signature(&p));
+                }
                 responder.respond(render::serve(uri.path(), uri.query()));
             });
         })
         .with_navigation_handler(move |url| {
             if url.starts_with(&file_origin) {
+                w_nav.set(paths::url_to_path(&url));
                 let _ = p_nav.send_event(UserEvent::ContentNav(url));
                 true
             } else if url.starts_with("about:") || url.starts_with("data:") || url.starts_with("blob:") {
@@ -506,6 +628,9 @@ fn main() {
         restoring: false,
         last_saved: None,
         ui_dpr: None,
+        watcher,
+        banner: false,
+        filters: Arc::new(filters::Filters::from_state(&st)),
         save_at: None,
         next_poll: Instant::now() + SCROLL_POLL,
         st,
@@ -533,6 +658,8 @@ fn main() {
                 UserEvent::ContentNav(url) => app.on_content_nav(&url),
                 UserEvent::PageLoaded(url) => app.on_page_loaded(&url),
                 UserEvent::Scroll(url, y) => app.on_scroll(&url, y),
+                UserEvent::FileChanged(p, deleted) => app.on_file_changed(&p, deleted),
+                UserEvent::ReloadAt(url, y) => app.on_reload_at(&url, y),
                 UserEvent::LoadContent(url) => {
                     let _ = app.content.load_url(&url);
                 }
