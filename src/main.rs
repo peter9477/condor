@@ -17,6 +17,7 @@ mod platform;
 mod gitfilter;
 mod highlight;
 mod render;
+mod search;
 mod state;
 mod update;
 mod watch;
@@ -116,6 +117,10 @@ enum Cmd {
     OpenOther { path: String },
     /// The first pane's share of a split.
     PaneRatio { ratio: f64 },
+    /// Make room above a pane's document for a popup (the tag editor); 0 to give it back.
+    PaneInset { pane: PaneId, px: f64 },
+    /// Search the roots; the reply carries `id` so the UI can drop stale results.
+    Search { query: String, id: u64 },
     /// Show the pane's Office file with the Windows previewer or LibreOffice.
     OfficeView { pane: Option<PaneId>, mode: String },
     /// Replace the tags on a file or folder (an empty list removes them).
@@ -156,6 +161,8 @@ struct Pane {
     banner: Option<serde_json::Value>,
     /// A Windows preview handler showing the file in place of the content view.
     preview: Option<platform::Preview>,
+    /// Extra space above the document (CSS px) while the UI shows a popup there.
+    inset: f64,
     /// Where the document goes, in physical pixels (x, y, w, h).
     rect: std::cell::Cell<(i32, i32, i32, i32)>,
 }
@@ -476,6 +483,7 @@ impl App {
                 restoring: false,
                 banner: None,
                 preview: None,
+                inset: 0.0,
                 rect: Default::default(),
             },
         );
@@ -612,7 +620,7 @@ impl App {
         let mut panes = Vec::new();
         for (id, r) in sh.panes.iter().zip(rects) {
             let Some(p) = self.panes.get(id) else { continue };
-            let top = PANE_BAR + if p.banner.is_some() { BANNER } else { 0.0 } + FRAME;
+            let top = PANE_BAR + if p.banner.is_some() { BANNER } else { 0.0 } + p.inset + FRAME;
             let (x, y) = (phys(r.0), phys(r.1 + top));
             let (w, h) = (phys(r.0 + r.2) - x, (phys(r.1 + r.3) - y).max(0.0));
             let _ = p.content.set_bounds(Rect {
@@ -916,6 +924,26 @@ impl App {
                 self.st.tag_filter = tags;
                 self.mark_dirty();
                 self.send_tags();
+            }
+            Cmd::PaneInset { pane, px } => {
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    let px = if px.is_finite() { px.clamp(0.0, 600.0) } else { 0.0 };
+                    if p.inset != px {
+                        p.inset = px;
+                        let wid = p.shell;
+                        self.layout(wid);
+                    }
+                }
+            }
+            Cmd::Search { query, id } => {
+                let (roots, filters, proxy) = (self.st.roots.clone(), self.filters.clone(), self.proxy.clone());
+                std::thread::spawn(move || {
+                    let t = Instant::now();
+                    let hits = search::search(&roots, &filters, &query);
+                    let ms = t.elapsed().as_millis() as u64;
+                    let msg = json!({"ev": "results", "id": id, "query": query, "hits": hits, "ms": ms});
+                    let _ = proxy.send_event(UserEvent::Listed(msg.to_string()));
+                });
             }
             Cmd::OfficeView { pane, mode } => {
                 let Some(id) = self.pane_of(wid, pane) else { return };

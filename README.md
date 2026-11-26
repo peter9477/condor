@@ -17,6 +17,11 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
 - Files Condor can't show (spreadsheets, Word documents, other binaries) get **Open** and
   **Open with…** buttons; right-clicking any file in the tree offers the same. Programs and
   scripts ask before running.
+- Search (box above the tree, Ctrl+Shift+F): words are matched against file names,
+  folders and contents, including text inside Office files, PDFs and old .doc/.xls files.
+  Documents matching every word come first, then matches in the name over the path over
+  the contents; each result shows where the words occur. Results replace the tree until
+  you clear the search (Esc). Uses the tree's filters; extracted text is cached in memory.
 - Office documents (.docx/.doc, .xlsx/.xls, .vsdx/.vsd, .pptx, ...) are shown with the
   Windows preview handler their application installs (what Explorer's preview pane uses),
   or, if there is none, converted to PDF by LibreOffice (cached). ⚙ chooses between them

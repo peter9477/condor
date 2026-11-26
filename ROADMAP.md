@@ -13,6 +13,12 @@ Ideas recorded for later; none of these are implemented yet.
 - Follow renames and moves (tags are stored by path, so a renamed file loses its tags).
 - Choose "any" or "all" when filtering by several tags (it's "any" now).
 
+## Search
+- Smarter matching: synonyms and related words, by embeddings (local model) or an AI
+  re-ranking of the top results, for questions like "which doc lists the radio features".
+- Remember extracted text on disk, for big trees and slow network folders.
+- Find within the open document, with matches highlighted.
+
 ## Previews of other formats
 - Previewer windows sit on top of everything in their pane's area, so the tag editor and
   menus can be hidden behind them.

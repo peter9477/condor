@@ -100,6 +100,22 @@ body.popout #side, body.popout #split { display: none; }
   background: hsl(var(--h) 70% 90%); color: hsl(var(--h) 60% 28%); }
 @media (prefers-color-scheme: dark) { .tag { background: hsl(var(--h) 35% 24%); color: hsl(var(--h) 70% 82%); } }
 .star { flex: none; margin-left: 5px; color: #d4a017; }
+#sbar { padding: 6px 8px; border-bottom: 1px solid var(--border); display: flex; gap: 4px; }
+#q { flex: 1; min-width: 0; font: inherit; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--fg); user-select: text; }
+#q:focus { outline: none; border-color: var(--cursor); }
+#qclear { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; }
+#results { flex: 1; overflow: auto; padding: 2px 0 24px; outline: none; }
+#results .status { padding: 6px 10px; color: var(--muted); font-size: 12px; }
+.hit { padding: 5px 10px 6px; cursor: default; border-left: 3px solid transparent; }
+.hit:hover { background: var(--hover); }
+.hit.sel { background: var(--sel); border-left-color: var(--cursor); }
+.hit .hname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; }
+.hit .hname > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.hit .hpath { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.hit .hsnip { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 1px; }
+.hit mark { background: #fff0a8; color: #3b2300; border-radius: 2px; padding: 0 1px; }
+@media (prefers-color-scheme: dark) { .hit mark { background: #6b5500; color: #fff3c4; } }
 #tagbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 #tagbar .tag { margin: 0; cursor: pointer; line-height: 20px; padding: 0 8px; border: 1px solid transparent; opacity: .75; }
 #tagbar .tag.on { border-color: currentColor; opacity: 1; font-weight: 600; }
@@ -149,7 +165,9 @@ body.popout #side, body.popout #split { display: none; }
     <div class="fnote">Shared by all Condor windows.</div>
     <div class="fbtns"><button id="s-apply">Apply</button></div>
   </div>
+  <div id="sbar"><input id="q" type="text" spellcheck="false" placeholder="Search names and contents (Ctrl+Shift+F)"><button id="qclear" class="hidden" title="Back to the tree (Esc)">&#x00d7;</button></div>
   <div id="tagbar" class="hidden"></div>
+  <div id="results" class="hidden" tabindex="0"></div>
   <div id="tree" tabindex="0"></div>
 </div>
 <div id="split"></div>
@@ -702,7 +720,7 @@ function paneEl(id) {
   q(".b-tags").onclick = (e) => {
     if (!p.state.file) return;
     const r = e.currentTarget.getBoundingClientRect();
-    openTagbox(p.state.file, false, r.left, r.bottom + 2);
+    openTagbox(p.state.file, false, r.right - 230, r.bottom + 2, id);
   };
   q(".b-tags").addEventListener("mousedown", (e) => e.stopPropagation());   // don't close the box it opens
   q(".bb-reload").onclick = () => send("reload");
@@ -830,9 +848,133 @@ function onBanner(msg) {
   d.addEventListener("pointerup", (e) => { d.releasePointerCapture(e.pointerId); d.classList.remove("drag"); });
 }
 
+// Search: words matched against file names, folders and contents (Office files and PDFs
+// too). Results replace the tree until the search is cleared.
+const qEl = document.getElementById("q"), resultsEl = document.getElementById("results");
+let searchId = 0, searchTimer = null, lastQuery = "";
+function showResults(on) {
+  resultsEl.classList.toggle("hidden", !on);
+  tree.classList.toggle("hidden", on);
+  document.getElementById("qclear").classList.toggle("hidden", !on);
+}
+function runSearch() {
+  clearTimeout(searchTimer);
+  const q = qEl.value.trim();
+  if (!q) { clearSearch(false); return; }
+  if (q === lastQuery && !resultsEl.classList.contains("hidden")) return;
+  lastQuery = q;
+  searchId++;
+  showResults(true);
+  resultsEl.replaceChildren(Object.assign(document.createElement("div"), {className: "status", textContent: "Searching…"}));
+  post({cmd: "search", query: q, id: searchId});
+}
+function clearSearch(focusTree) {
+  clearTimeout(searchTimer);
+  searchId++;
+  lastQuery = "";
+  qEl.value = "";
+  showResults(false);
+  if (focusTree) tree.focus();
+}
+function onResults(msg) {
+  if (msg.id !== searchId) return;   // a newer search is running
+  const frag = [];
+  const st = document.createElement("div");
+  st.className = "status";
+  st.textContent = msg.hits.length ? msg.hits.length + (msg.hits.length >= 60 ? "+" : "") + " found (" + (msg.ms / 1000).toFixed(1) + " s)"
+                                    : "Nothing found for “" + msg.query + "”.";
+  frag.push(st);
+  for (const h of msg.hits) {
+    const d = document.createElement("div");
+    d.className = "hit" + (h.path === selected ? " sel" : "");
+    d.dataset.path = h.path;
+    d.title = h.path;
+    const name = document.createElement("div");
+    name.className = "hname";
+    const nm = document.createElement("span");
+    nm.textContent = h.name;
+    name.append(nm);
+    const t = tagsOf(h.path);
+    if (t.includes(STAR)) name.append(Object.assign(document.createElement("span"), {className: "star", textContent: STAR}));
+    for (const tg of t) if (tg !== STAR) name.append(tagEl(tg));
+    const path = document.createElement("div");
+    path.className = "hpath";
+    path.textContent = "‎" + h.folder;   // rtl box keeps the end visible; the mark keeps text order
+    d.append(name, path);
+    if (h.snippet.length) {
+      const sn = document.createElement("div");
+      sn.className = "hsnip";
+      for (const [text, m] of h.snippet) sn.append(m ? Object.assign(document.createElement("mark"), {textContent: text}) : document.createTextNode(text));
+      d.append(sn);
+    }
+    frag.push(d);
+  }
+  resultsEl.replaceChildren(...frag);
+}
+resultsEl.addEventListener("click", (e) => {
+  const h = e.target.closest(".hit");
+  if (!h) return;
+  for (const o of resultsEl.querySelectorAll(".hit.sel")) o.classList.remove("sel");
+  h.classList.add("sel");
+  post({cmd: "open", path: h.dataset.path});
+});
+resultsEl.addEventListener("contextmenu", (e) => {
+  const h = e.target.closest(".hit");
+  if (!h) return;
+  e.preventDefault();
+  openMenu(h.dataset.path, false, e.clientX, e.clientY);
+});
+resultsEl.addEventListener("keydown", (e) => {
+  const all = [...resultsEl.querySelectorAll(".hit")];
+  let i = all.findIndex((h) => h.classList.contains("sel"));
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    i = Math.max(0, Math.min(all.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)));
+    if (all[i]) { all[i].click(); all[i].scrollIntoView({block: "nearest"}); }
+    e.preventDefault();
+  } else if (e.key === "Escape") clearSearch(true);
+});
+qEl.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  if (!qEl.value.trim()) { clearSearch(false); return; }
+  if (qEl.value.trim().length >= 3) searchTimer = setTimeout(runSearch, 450);
+});
+qEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { lastQuery = ""; runSearch(); e.preventDefault(); }
+  else if (e.key === "Escape") { clearSearch(true); e.preventDefault(); }
+  else if (e.key === "ArrowDown" && !resultsEl.classList.contains("hidden")) {
+    resultsEl.focus();
+    const first = resultsEl.querySelector(".hit");
+    if (first && !resultsEl.querySelector(".hit.sel")) first.click();
+    e.preventDefault();
+  }
+});
+document.getElementById("qclear").onclick = () => clearSearch(true);
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.shiftKey && (e.key === "F" || e.key === "f")) { qEl.focus(); qEl.select(); e.preventDefault(); }
+});
+
 // The tag editor: star, existing tags as checkboxes, and a box for a new one.
 const tagbox = document.getElementById("tagbox");
-let tbPath = null, tbDir = false;
+let tbPath = null, tbDir = false, tbPane = null;
+// Popups can't draw over documents (they are separate views on top of this page), so ones
+// opened from the sidebar stay inside it, and the tag editor opened from a pane's bar has
+// the pane make room for it.
+function sideRight() { return MODE === "main" ? currentWidth() : innerWidth; }
+function fitPopup(el, x, y, inSide) {
+  const right = inSide ? sideRight() : innerWidth;
+  el.style.maxWidth = Math.max(120, right - 8) + "px";
+  const r = el.getBoundingClientRect();
+  el.style.left = Math.max(4, Math.min(x, right - r.width - 4)) + "px";
+  el.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + "px";
+}
+function paneInset() {
+  if (tbPane === null || tagbox.classList.contains("hidden")) return;
+  const p = paneEls.get(tbPane), r = lastLayout && lastLayout.panes.find((q) => q.id === tbPane);
+  if (!p || !r) return;
+  const docTop = r.y + PANE_BAR + (p.bannerMsg ? BANNER : 0);
+  const bottom = tagbox.getBoundingClientRect().bottom + 6;
+  post({cmd: "paneInset", pane: tbPane, px: Math.max(0, Math.ceil(bottom - docTop))});
+}
 function fillTagbox() {
   const have = tagsOf(tbPath);
   tagbox.querySelector(".tb-title").textContent = baseName(tbPath);
@@ -852,19 +994,30 @@ function fillTagbox() {
     l.append(cb, tagEl(t));
     list.append(l);
   }
+  paneInset();   // a new tag makes the box taller
 }
-function openTagbox(path, dir, x, y) {
-  tbPath = path; tbDir = dir;
+function openTagbox(path, dir, x, y, pane) {
+  hideTagbox();
+  tbPath = path; tbDir = dir; tbPane = pane === undefined ? null : pane;
   fillTagbox();
   tagbox.classList.remove("hidden");
-  const r = tagbox.getBoundingClientRect();
-  tagbox.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + "px";
-  tagbox.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + "px";
+  if (tbPane === null) fitPopup(tagbox, x, y, true);
+  else {
+    const r = tagbox.getBoundingClientRect();
+    tagbox.style.maxWidth = "";
+    tagbox.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + "px";
+    tagbox.style.top = y + "px";
+    paneInset();
+  }
   const input = tagbox.querySelector(".tb-new");
   input.value = "";
   input.focus();
 }
-function hideTagbox() { tagbox.classList.add("hidden"); }
+function hideTagbox() {
+  if (tbPane !== null && !tagbox.classList.contains("hidden")) post({cmd: "paneInset", pane: tbPane, px: 0});
+  tagbox.classList.add("hidden");
+  tbPane = null;
+}
 tagbox.querySelector(".tb-star").onchange = (e) => {
   const cur = tagsOf(tbPath).filter((x) => x !== STAR);
   setTags(tbPath, tbDir, e.target.checked ? [...cur, STAR] : cur);
@@ -891,17 +1044,18 @@ tree.addEventListener("contextmenu", (e) => {
   const row = e.target.closest(".row");
   const n = row && row.parentElement;
   if (!n || !n.classList.contains("node")) { hideMenu(); return; }
-  menuPath = n.dataset.path;
-  menuDir = !!n.dataset.dir;
+  openMenu(n.dataset.path, !!n.dataset.dir, e.clientX, e.clientY);
+});
+function openMenu(path, dir, x, y) {
+  menuPath = path;
+  menuDir = dir;
   for (const el of menu.querySelectorAll(".m-file")) el.classList.toggle("hidden", menuDir);
   document.getElementById("m-openwith").classList.toggle("hidden", menuDir || !canOpenWith);
   document.getElementById("m-star").textContent = tagsOf(menuPath).includes(STAR) ? "Unstar" : "Star";
-  menu.dataset.x = e.clientX; menu.dataset.y = e.clientY;
+  menu.dataset.x = x; menu.dataset.y = y;
   menu.classList.remove("hidden");
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.min(e.clientX, innerWidth - r.width - 4) + "px";
-  menu.style.top = Math.min(e.clientY, innerHeight - r.height - 4) + "px";
-});
+  fitPopup(menu, x, y, true);
+}
 document.getElementById("m-star").onclick = () => { hideMenu(); toggleStar(menuPath, menuDir); };
 document.getElementById("m-tags").onclick = () => { hideMenu(); openTagbox(menuPath, menuDir, +menu.dataset.x, +menu.dataset.y); };
 document.getElementById("m-open").onclick = () => { hideMenu(); post({cmd: "openExternal", path: menuPath, with: false}); };
@@ -1031,6 +1185,7 @@ window.condor = {
         renderRoots();
         break;
       case "list": onList(msg); break;
+      case "results": onResults(msg); break;
       case "selected": select(msg.path); break;
       case "banner": onBanner(msg); break;
       case "filter": filters = msg.filters; showFilter(); relistAll(); break;
