@@ -43,6 +43,9 @@ pub struct EnvState {
     pub auto_reload: BTreeSet<String>,
     /// Files last viewed as source rather than rendered (opening them uses that view).
     pub source_view: BTreeSet<String>,
+    /// Office files kept to one viewer ("web", "previewer", "libreoffice") whatever their
+    /// type's choice in the settings.
+    pub office_by_file: BTreeMap<String, String>,
     /// The main window is split into two panes; the second shows `split_file`.
     pub split: bool,
     pub split_file: Option<String>,
@@ -93,6 +96,7 @@ impl Default for EnvState {
             window: None,
             hide_ignored: false,
             auto_reload: BTreeSet::new(),
+            office_by_file: BTreeMap::new(),
             show_hidden: false,
             viewable_only: false,
             excludes: Vec::new(),

@@ -21,6 +21,34 @@ const STRICT_CSP: &str = "default-src 'self' data: blob:; script-src 'none'; sty
 
 const DOC_CSS: &str = include_str!("../ui/doc.css");
 
+/// The built-in Word view's page runs these (and nothing else): the bundled renderer and
+/// its zip reader (ui/vendor), and ui/docx-view.js, which fetches the file with `?raw`.
+const DOCX_CSP: &str = "default-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; object-src 'none'; frame-src 'none'";
+const JSZIP_JS: &str = include_str!("../ui/vendor/jszip.min.js");
+const DOCX_PREVIEW_JS: &str = include_str!("../ui/vendor/docx-preview.min.js");
+const DOCX_VIEW_JS: &str = include_str!("../ui/docx-view.js");
+
+/// Word files the built-in view can show.
+pub fn web_viewable(path: &str) -> bool {
+    matches!(ext_of(path).as_str(), "docx" | "docm" | "dotx" | "dotm")
+}
+
+/// True if a content URL asks for the built-in Word view.
+pub fn is_docx_url(url: &str) -> bool {
+    url.split('#').next().and_then(|u| u.split_once('?')).map_or(false, |(_, q)| q.split('&').any(|p| p == "docx"))
+}
+
+fn docx_page(path: &str) -> Resp {
+    let body = format!(
+        "<style>html, body.docx-view {{ margin: 0; padding: 0; max-width: none; background: #e4e4e4; }}\
+         .docx-wrapper {{ background: transparent !important; padding: 16px !important; }}\
+         .docx-wrapper > section.docx {{ box-shadow: 0 1px 4px rgba(0,0,0,.25); margin-bottom: 16px !important; }}\
+         .msg {{ padding: 24px; }}</style>\
+         <div id=\"doc\"></div><script>{JSZIP_JS}</script><script>{DOCX_PREVIEW_JS}</script><script>{DOCX_VIEW_JS}</script>"
+    );
+    respond(StatusCode::OK, "text/html; charset=utf-8", Some(DOCX_CSP), page(file_name(path), "docx-view", &body))
+}
+
 fn respond(status: StatusCode, ctype: &str, csp: Option<&str>, body: Vec<u8>) -> Resp {
     let mut b = Response::builder()
         .status(status)
@@ -213,6 +241,9 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
             Ok(b) => respond(StatusCode::OK, "application/pdf", None, b),
             Err(e) => message(StatusCode::OK, "Can't show this file", &format!("{}: {e}", file_name(&path))),
         };
+    }
+    if query.map_or(false, |q| q.split('&').any(|p| p == "docx")) && web_viewable(&path) {
+        return docx_page(&path);
     }
     if source {
         return text_view(&path, &ext, meta.len());

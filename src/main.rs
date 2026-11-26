@@ -147,7 +147,8 @@ enum Cmd {
     /// Search the roots; the reply carries `id` so the UI can drop stale results.
     Search { query: String, id: u64 },
     /// Show the pane's Office file with the Windows previewer or LibreOffice.
-    OfficeView { pane: Option<PaneId>, mode: String },
+    /// Show the pane's Office file with `mode`: for its whole type, or (`file`) for it alone.
+    OfficeView { pane: Option<PaneId>, mode: String, #[serde(default)] file: bool },
     /// Replace the tags on a file or folder (an empty list removes them).
     SetTags { path: String, dir: bool, tags: Vec<String> },
     /// Filter the tree to items with any of these tags (empty: no filter).
@@ -427,16 +428,27 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
 
 /// How an Office file is shown under these settings: the choice made for its type, else
 /// the global setting ("auto": the previewer, but LibreOffice for unreliable previewers).
-fn office_mode(s: &state::Settings, path: &str) -> &'static str {
-    match s.office_by_type.get(&convert::ext_of(path)).map(String::as_str) {
-        Some("previewer") => return "previewer",
-        Some("libreoffice") => return "libreoffice",
-        _ => {}
+/// How an Office file is shown: "web" (built-in view), "previewer" (Windows), "libreoffice"
+/// (converted to PDF) or "off". A choice kept for the file wins, then its type's, then the
+/// general setting.
+fn office_mode(s: &state::Settings, st: Option<&state::EnvState>, path: &str) -> &'static str {
+    let mode = |m: Option<&String>| match m.map(String::as_str) {
+        Some("web") if render::web_viewable(path) => Some("web"),
+        Some("previewer") => Some("previewer"),
+        Some("libreoffice") => Some("libreoffice"),
+        _ => None,
+    };
+    if let Some(m) = st.and_then(|st| mode(st.office_by_file.get(path))) {
+        return m;
+    }
+    if let Some(m) = mode(s.office_by_type.get(&convert::ext_of(path))) {
+        return m;
     }
     match s.office_view.as_str() {
         "previewer" => "previewer",
         "libreoffice" => "libreoffice",
         "off" => "off",
+        _ if render::web_viewable(path) => "web",
         _ if convert::previewer_unreliable(path) && convert::available() => "libreoffice",
         _ => "previewer",
     }
@@ -728,11 +740,31 @@ impl App {
         let can = p.current.as_deref().map_or(false, render::has_source_view);
         let auto = p.current.as_ref().map_or(false, |f| self.st.auto_reload.contains(f));
         // Office files: which viewer shows it, and whether the other one is available.
-        let office = match &p.current {
-            Some(f) if p.preview.is_some() && convert::convertible(f) && convert::available() => Some("previewer"),
-            Some(f) if render::is_converted_url(&p.url) && platform::has_previewer(f) => Some("libreoffice"),
-            _ => None,
-        };
+        let office = p.current.as_deref().and_then(|f| {
+            let now = if p.preview.is_some() {
+                "previewer"
+            } else if render::is_converted_url(&p.url) {
+                "libreoffice"
+            } else if render::is_docx_url(&p.url) {
+                "web"
+            } else {
+                return None;
+            };
+            let mut modes = Vec::new();
+            if render::web_viewable(f) {
+                modes.push("web");
+            }
+            if convert::convertible(f) && convert::available() {
+                modes.push("libreoffice");
+            }
+            if platform::has_previewer(f) {
+                modes.push("previewer");
+            }
+            (modes.len() >= 2).then(|| {
+                json!({"mode": now, "modes": modes, "ext": convert::ext_of(f),
+                       "forType": office_mode(&self.settings, None, f), "forFile": self.st.office_by_file.get(f)})
+            })
+        });
         self.send_ui(
             p.shell,
             &json!({"ev": "pane", "id": id, "file": p.current, "canSource": can,
@@ -756,7 +788,7 @@ impl App {
     /// setting, where "auto" means the Windows previewer, except for types whose previewer
     /// often shows nothing (Visio's, without Visio installed), which go to LibreOffice.
     fn office_default(&self, path: &str) -> &'static str {
-        office_mode(&self.settings, path)
+        office_mode(&self.settings, Some(&self.st), path)
     }
 
     /// File types the tree shows undimmed besides the viewable list: those with highlighting,
@@ -1112,19 +1144,39 @@ impl App {
                     let _ = proxy.send_event(UserEvent::Listed(msg.to_string()));
                 });
             }
-            Cmd::OfficeView { pane, mode } => {
+            Cmd::OfficeView { pane, mode, file: just_this } => {
                 let Some(id) = self.pane_of(wid, pane) else { return };
                 let Some(file) = self.panes[&id].current.clone() else { return };
-                if !matches!(mode.as_str(), "previewer" | "libreoffice") {
+                if just_this && mode == "unlock" {
+                    self.st.office_by_file.remove(&file);
+                    self.mark_dirty();
+                    let _ = self.panes[&id].content.load_url(&paths::path_to_url(&file));
                     return;
                 }
-                // The choice is for the file type, shared by all windows (settings.json).
+                if !matches!(mode.as_str(), "web" | "previewer" | "libreoffice") {
+                    return;
+                }
+                if just_this {
+                    // Kept for this file (in the environment's state), whatever its type uses.
+                    self.st.office_by_file.insert(file.clone(), mode);
+                    self.mark_dirty();
+                    let _ = self.panes[&id].content.load_url(&paths::path_to_url(&file));
+                    return;
+                }
+                // The choice is for the file type, shared by all windows (settings.json); it
+                // also ends any choice kept for this file.
+                if self.st.office_by_file.remove(&file).is_some() {
+                    self.mark_dirty();
+                }
                 let ext = convert::ext_of(&file);
                 let mut s = self.settings.clone();
                 s.office_by_type.remove(&ext);
-                let natural = office_mode(&s, &file);
+                let natural = office_mode(&s, None, &file);
                 if mode != natural {
                     s.office_by_type.insert(ext.clone(), mode);
+                }
+                if s == self.settings {
+                    let _ = self.panes[&id].content.load_url(&paths::path_to_url(&file));
                 }
                 if let Err(e) = state::save_settings(&s) {
                     log(&format!("saving settings failed: {e}"));
@@ -1188,6 +1240,11 @@ impl App {
             return; // moved on, or a change banner is already showing
         }
         let mode = self.office_default(path).to_string();
+        if mode == "web" {
+            let url = format!("{}?docx", paths::path_to_url(path));
+            let _ = p.content.evaluate_script(&format!("location.replace({})", json!(url)));
+            return;
+        }
         if matches!(mode.as_str(), "auto" | "previewer") {
             let hwnd = platform::window_handle(&self.shells[&p.shell].window);
             let local = vfs::local(path).map(|l| l.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string());
@@ -1282,6 +1339,9 @@ impl App {
         self.send_pane_state(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let path = paths::url_to_path(url);
+        if render::is_docx_url(url) {
+            return;
+        }
         if render::is_converted_url(url) {
             let converting = p.banner.as_ref().map_or(false, |b| b["kind"] == "converting");
             if converting {

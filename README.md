@@ -22,11 +22,14 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   Documents matching every word come first, then matches in the name over the path over
   the contents; each result shows where the words occur. Results replace the tree until
   you clear the search (Esc). Uses the tree's filters; extracted text is cached in memory.
-- Office documents (.docx/.doc, .xlsx/.xls, .vsdx/.vsd, .pptx, ...) are shown with the
-  Windows preview handler their application installs (what Explorer's preview pane uses),
-  or, if there is none, converted to PDF by LibreOffice (cached). ⚙ chooses between them
-  for all files; the PDF / PREVIEW button in a document's bar switches that file type (all
-  windows), and the settings panel lists those choices so they can be undone.
+- Office documents (.docx/.doc, .xlsx/.xls, .vsdx/.vsd, .pptx, ...) can be shown three ways:
+  Condor's built-in view (Word .docx files: rendered as pages, quickly, with the bundled
+  [docx-preview](https://github.com/VolodymyrBaydalka/docxjs)); the Windows preview handler
+  their application installs (what Explorer's preview pane uses); or converted to PDF by
+  LibreOffice (cached). ⚙ sets the general choice. The selector in a document's bar
+  (Built-in | PDF | Windows) switches that file type in all windows (a dot marks the type's
+  choice; the settings panel lists these so they can be undone). Its lock keeps the current
+  viewer for that one file; while locked, the selector changes only that file.
 - `file://` links in Markdown open in Condor, like relative links.
 - Zip files open like folders in the tree: files inside view as usual (Markdown with its
   relative links and images, Office documents, PDFs...). They're extracted on demand to a
