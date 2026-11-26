@@ -364,6 +364,23 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
     (content, watcher)
 }
 
+/// How an Office file is shown under these settings: the choice made for its type, else
+/// the global setting ("auto": the previewer, but LibreOffice for unreliable previewers).
+fn office_mode(s: &state::Settings, path: &str) -> &'static str {
+    match s.office_by_type.get(&convert::ext_of(path)).map(String::as_str) {
+        Some("previewer") => return "previewer",
+        Some("libreoffice") => return "libreoffice",
+        _ => {}
+    }
+    match s.office_view.as_str() {
+        "previewer" => "previewer",
+        "libreoffice" => "libreoffice",
+        "off" => "off",
+        _ if convert::previewer_unreliable(path) && convert::available() => "libreoffice",
+        _ => "previewer",
+    }
+}
+
 fn geometry_of(w: &Window, previous: Option<state::WinGeom>) -> Option<state::WinGeom> {
     if w.is_minimized() {
         return previous;
@@ -673,13 +690,7 @@ impl App {
     /// setting, where "auto" means the Windows previewer, except for types whose previewer
     /// often shows nothing (Visio's, without Visio installed), which go to LibreOffice.
     fn office_default(&self, path: &str) -> &'static str {
-        match self.settings.office_view.as_str() {
-            "previewer" => "previewer",
-            "libreoffice" => "libreoffice",
-            "off" => "off",
-            _ if convert::previewer_unreliable(path) && convert::available() => "libreoffice",
-            _ => "previewer",
-        }
+        office_mode(&self.settings, path)
     }
 
     /// File types the tree shows undimmed besides the viewable list: those with highlighting,
@@ -964,14 +975,19 @@ impl App {
                 if !matches!(mode.as_str(), "previewer" | "libreoffice") {
                     return;
                 }
-                if mode == self.office_default(&file) {
-                    self.st.office_view.remove(&file);
-                } else {
-                    self.st.office_view.insert(file.clone(), mode);
+                // The choice is for the file type, shared by all windows (settings.json).
+                let ext = convert::ext_of(&file);
+                let mut s = self.settings.clone();
+                s.office_by_type.remove(&ext);
+                let natural = office_mode(&s, &file);
+                if mode != natural {
+                    s.office_by_type.insert(ext.clone(), mode);
                 }
-                self.mark_dirty();
-                // Load the plain URL: the page-loaded check then picks the viewer.
-                let _ = self.panes[&id].content.load_url(&paths::path_to_url(&file));
+                if let Err(e) = state::save_settings(&s) {
+                    log(&format!("saving settings failed: {e}"));
+                }
+                self.settings_sig = watch::signature(&state::settings_file().to_string_lossy());
+                self.apply_settings(s);
             }
             Cmd::PaneRatio { ratio } => {
                 if ratio.is_finite() {
@@ -1023,7 +1039,7 @@ impl App {
         if p.current.as_deref() != Some(path) || p.banner.is_some() {
             return; // moved on, or a change banner is already showing
         }
-        let mode = self.st.office_view.get(path).cloned().unwrap_or_else(|| self.office_default(path).to_string());
+        let mode = self.office_default(path).to_string();
         if matches!(mode.as_str(), "auto" | "previewer") {
             let hwnd = platform::window_handle(&self.shells[&p.shell].window);
             match platform::Preview::open(hwnd, path, p.rect.get()) {
@@ -1164,6 +1180,19 @@ impl App {
         if old.viewable_exts != self.settings.viewable_exts {
             self.rebuild_filters();
             self.send_main(&json!({"ev": "filter", "filters": self.filter_state()}));
+        }
+        if old.office_view != self.settings.office_view || old.office_by_type != self.settings.office_by_type {
+            // Show Office files again with the viewer now chosen for them.
+            let ids: Vec<PaneId> = self
+                .panes
+                .iter()
+                .filter(|(_, p)| p.current.as_deref().map_or(false, convert::convertible))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in ids {
+                let p = &self.panes[&id];
+                let _ = p.content.load_url(&paths::path_to_url(p.current.as_deref().unwrap_or_default()));
+            }
         }
         if old.doc_width != self.settings.doc_width {
             render::set_width(&self.settings.doc_width);

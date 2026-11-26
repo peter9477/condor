@@ -25,7 +25,8 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
 - Office documents (.docx/.doc, .xlsx/.xls, .vsdx/.vsd, .pptx, ...) are shown with the
   Windows preview handler their application installs (what Explorer's preview pane uses),
   or, if there is none, converted to PDF by LibreOffice (cached). ⚙ chooses between them
-  for all files; the PDF / PREVIEW button in a document's bar switches one file.
+  for all files; the PDF / PREVIEW button in a document's bar switches that file type (all
+  windows), and the settings panel lists those choices so they can be undone.
 - `file://` links in Markdown open in Condor, like relative links.
 - Tags and stars: right-click a file or folder in the tree (or use ☆ and # in a document's
   bar) to star it or give it tags, shown as badges in the tree; `*` stars the item under

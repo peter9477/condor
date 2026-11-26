@@ -44,8 +44,6 @@ pub struct EnvState {
     pub auto_reload: BTreeSet<String>,
     /// Files last viewed as source rather than rendered (opening them uses that view).
     pub source_view: BTreeSet<String>,
-    /// Office files shown the other way from the global setting: "previewer" or "libreoffice".
-    pub office_view: BTreeMap<String, String>,
     /// The main window is split into two panes; the second shows `split_file`.
     pub split: bool,
     pub split_file: Option<String>,
@@ -100,7 +98,6 @@ impl Default for EnvState {
             viewable_only: false,
             excludes: Vec::new(),
             source_view: BTreeSet::new(),
-            office_view: BTreeMap::new(),
             split: false,
             split_file: None,
             split_side_by_side: true,
@@ -171,6 +168,8 @@ pub struct Settings {
     /// Office and similar files: "auto" (the Windows previewer if one is installed, else
     /// LibreOffice), "previewer", "libreoffice" or "off".
     pub office_view: String,
+    /// File types (extension) shown the other way: "previewer" or "libreoffice".
+    pub office_by_type: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -179,6 +178,7 @@ impl Default for Settings {
             viewable_exts: crate::filters::DEFAULT_VIEWABLE.iter().map(|s| s.to_string()).collect(),
             doc_width: "wide".to_string(),
             office_view: "auto".to_string(),
+            office_by_type: Default::default(),
         }
     }
 }
@@ -200,6 +200,11 @@ impl Settings {
         if !matches!(self.office_view.as_str(), "auto" | "previewer" | "libreoffice" | "off") {
             self.office_view = "auto".into();
         }
+        self.office_by_type = std::mem::take(&mut self.office_by_type)
+            .into_iter()
+            .map(|(k, v)| (k.trim().trim_start_matches('.').to_ascii_lowercase(), v))
+            .filter(|(k, v)| !k.is_empty() && matches!(v.as_str(), "previewer" | "libreoffice"))
+            .collect();
         self
     }
 }

@@ -128,6 +128,9 @@ body.popout #side, body.popout #split { display: none; }
 #tagbox .tb-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
 #tagbox .tb-new { margin-top: 4px; font: inherit; padding: 3px 6px; background: var(--bg); color: var(--fg);
   border: 1px solid var(--border); border-radius: 4px; user-select: text; }
+#spanel .stype { color: var(--muted); padding-left: 22px; }
+#spanel .stype button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 14px; }
+#spanel .stype button:hover { color: var(--fg); }
 #menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
 .pbar .b-star.on { color: #d4a017; background: none; }
 .pbar .b-tags { font-size: 13px; font-weight: 600; }
@@ -160,6 +163,7 @@ body.popout #side, body.popout #split { display: none; }
     <label><input type="radio" name="s-office" value="libreoffice"> LibreOffice (converted to PDF)</label>
     <label><input type="radio" name="s-office" value="previewer"> Windows previewer only</label>
     <label><input type="radio" name="s-office" value="off"> Don't show them</label>
+    <div id="s-types"></div>
     <div class="flabel">Viewable file types (for "Only viewable file types"):</div>
     <textarea id="s-exts" rows="4" spellcheck="false"></textarea>
     <div class="fnote">Shared by all Condor windows.</div>
@@ -782,8 +786,9 @@ function onPane(msg) {
   const office = q(".b-office");
   office.classList.toggle("hidden", !msg.office);
   office.textContent = msg.office === "previewer" ? "PDF" : "PREVIEW";
-  office.title = msg.office === "previewer" ? "Show this file converted to PDF by LibreOffice"
-                                            : "Show this file with the Windows (Office) previewer";
+  const ext = msg.file ? "." + (msg.file.split(".").pop() || "").toLowerCase() : "";
+  office.title = msg.office === "previewer" ? "Show " + ext + " files converted to PDF by LibreOffice"
+                                            : "Show " + ext + " files with the Windows (Office) previewer";
   const auto = q(".b-auto");
   auto.disabled = !msg.file;
   auto.classList.toggle("on", !!msg.auto);
@@ -1099,6 +1104,24 @@ const spanel = document.getElementById("spanel");
 function showSettings() {
   for (const r of document.querySelectorAll('input[name="s-width"]')) r.checked = r.value === settings.doc_width;
   for (const r of document.querySelectorAll('input[name="s-office"]')) r.checked = r.value === (settings.office_view || "auto");
+  // Types switched with the PDF / PREVIEW button, each with a way to undo it.
+  const types = document.getElementById("s-types");
+  types.replaceChildren();
+  for (const [ext, how] of Object.entries(settings.office_by_type || {})) {
+    const row = document.createElement("div");
+    row.className = "stype";
+    row.textContent = "." + ext + ": " + (how === "libreoffice" ? "LibreOffice (PDF)" : "Windows previewer") + " ";
+    const x = document.createElement("button");
+    x.textContent = "\u00d7";
+    x.title = "Forget this choice";
+    x.onclick = () => {
+      const m = Object.assign({}, settings.office_by_type);
+      delete m[ext];
+      post({cmd: "setSettings", settings: Object.assign({}, settings, {office_by_type: m})});
+    };
+    row.append(x);
+    types.append(row);
+  }
   document.getElementById("s-exts").value = settings.viewable_exts.join(" ");
 }
 document.getElementById("gear").onclick = () => {
@@ -1111,7 +1134,8 @@ document.getElementById("s-apply").onclick = () => {
   post({cmd: "setSettings", settings: {
     viewable_exts: document.getElementById("s-exts").value.split(/[\s,;]+/).filter(Boolean),
     doc_width: w ? w.value : "wide",
-    office_view: (document.querySelector('input[name="s-office"]:checked') || {value: "auto"}).value}});
+    office_view: (document.querySelector('input[name="s-office"]:checked') || {value: "auto"}).value,
+    office_by_type: settings.office_by_type || {}}});
 };
 // The mouse's own back/forward buttons, when the pointer is over the sidebar.
 document.addEventListener("mouseup", (e) => {
