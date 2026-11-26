@@ -28,6 +28,14 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   for all files; the PDF / PREVIEW button in a document's bar switches that file type (all
   windows), and the settings panel lists those choices so they can be undone.
 - `file://` links in Markdown open in Condor, like relative links.
+- Zip files open like folders in the tree: files inside view as usual (Markdown with its
+  relative links and images, Office documents, PDFs...). They're extracted on demand to a
+  local cache, never beside the zip.
+- Copy (Ctrl+C) puts a file itself on the clipboard, so it pastes into a chat or Explorer
+  as an attachment or a copy; Copy path (Ctrl+Shift+C) copies its path. A pane's copy
+  button copies the selection, or the whole document. Folders have Open in Terminal (a
+  WSL shell for `\\wsl$` folders).
+- The tree follows files being added and removed (open folders are checked every few seconds).
 - Tags and stars: right-click a file or folder in the tree (or use ☆ and # in a document's
   bar) to star it or give it tags, shown as badges in the tree; `*` stars the item under
   the keyboard cursor. The chips above the tree filter it to items with any of the chosen

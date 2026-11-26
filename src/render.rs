@@ -156,6 +156,8 @@ fn is_markdown(ext: &str) -> bool {
 /// Whether Condor shows this file itself; false for binary files (.xlsx, .doc, ...) and
 /// text too large to show, which get Open / Open with... instead. Reads at most 8 KB.
 pub fn previewable(path: &str) -> bool {
+    let Ok(local) = crate::vfs::local(path) else { return true };
+    let path = &*local.to_string_lossy();
     let Ok(meta) = std::fs::metadata(path) else { return true };
     let ext = ext_of(path);
     if meta.is_dir() || is_markdown(&ext) || raw_type(&ext).is_some() {
@@ -181,6 +183,20 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
             "<div class=\"msg welcome\"><h2>Condor</h2><p>Choose a file in the tree to view it.</p></div>",
         );
     };
+    // Inside a zip: folders list the archive; files are served from their extracted copy.
+    let mut path = path;
+    if let Some((zip, inner)) = crate::vfs::split(&path) {
+        if inner.is_empty() || crate::vfs::is_dir(&path) {
+            return match crate::vfs::list(&zip, &inner) {
+                Ok(es) => listing_of(&path, url_path, es),
+                Err(e) => message(StatusCode::NOT_FOUND, "Cannot open", &format!("{path}: {e}")),
+            };
+        }
+        match crate::vfs::local(&path) {
+            Ok(l) => path = l.to_string_lossy().into_owned(),
+            Err(e) => return message(StatusCode::NOT_FOUND, "Cannot open", &format!("{path}: {e}")),
+        }
+    }
     let raw = query.map_or(false, |q| q.split('&').any(|p| p == "raw"));
     let source = query.map_or(false, |q| q.split('&').any(|p| p == "source"));
     let meta = match std::fs::metadata(&path) {
@@ -268,7 +284,7 @@ fn read_text(path: &str, len: u64) -> Result<String, Resp> {
 }
 
 fn listing(path: &str, url_path: &str) -> Resp {
-    let mut entries: Vec<(bool, String)> = match std::fs::read_dir(path) {
+    let entries: Vec<(bool, String)> = match std::fs::read_dir(path) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .map(|e| {
@@ -280,6 +296,10 @@ fn listing(path: &str, url_path: &str) -> Resp {
             .collect(),
         Err(e) => return message(StatusCode::INTERNAL_SERVER_ERROR, "Cannot list folder", &format!("{path}: {e}")),
     };
+    listing_of(path, url_path, entries)
+}
+
+fn listing_of(path: &str, url_path: &str, mut entries: Vec<(bool, String)>) -> Resp {
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
     let base = if url_path.ends_with('/') { url_path.to_string() } else { format!("{url_path}/") };
     let mut body = format!("<h1>{}</h1><ul class=\"listing\">", escape(path));

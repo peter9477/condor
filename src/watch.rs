@@ -16,7 +16,9 @@ pub enum Sig {
 }
 
 pub fn signature(path: &str) -> Sig {
-    match std::fs::metadata(path) {
+    // A file inside a zip changes when the zip does.
+    let zip = crate::vfs::container(path);
+    match std::fs::metadata(zip.as_deref().unwrap_or(path)) {
         Ok(m) => Sig::Present(m.modified().ok(), m.len()),
         Err(_) => Sig::Missing,
     }

@@ -21,6 +21,7 @@ mod render;
 mod search;
 mod state;
 mod update;
+mod vfs;
 mod watch;
 
 use serde::Deserialize;
@@ -245,8 +246,28 @@ fn debug(msg: impl FnOnce() -> String) {
 /// Read a directory on a worker thread and report back.
 fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
-        let msg = match std::fs::read_dir(&path) {
-            Ok(rd) => {
+        // A zip file, or a folder inside one: list the archive.
+        let listed = match vfs::split(&path) {
+            Some((zip, inner)) => vfs::list(&zip, &inner).map(|es| {
+                let keep = filters.for_dir(&path);
+                es.into_iter()
+                    .map(|(d, n)| (d, n.clone(), format!("{}{}{n}", path.trim_end_matches(std::path::MAIN_SEPARATOR), std::path::MAIN_SEPARATOR)))
+                    .filter(|(d, n, p)| keep.keep(std::path::Path::new(p), n, *d, n.starts_with('.')))
+                    .collect::<Vec<_>>()
+            }),
+            None => Err(std::io::Error::other("")),
+        };
+        let read = match listed {
+            Ok(es) => Ok(Err(es)),
+            Err(_) => std::fs::read_dir(&path).map(Ok),
+        };
+        let msg = match read {
+            Ok(Err(mut entries)) => {
+                entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+                let list: Vec<_> = entries.into_iter().map(|(d, n, p)| json!({"name": n, "path": p, "dir": d})).collect();
+                json!({"ev": "list", "path": path, "entries": list})
+            }
+            Ok(Ok(rd)) => {
                 let keep = filters.for_dir(&path);
                 let mut entries: Vec<(bool, String, String)> = rd
                     .filter_map(|e| e.ok())
@@ -257,6 +278,8 @@ fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<
                             is_dir = e.path().is_dir();
                         }
                         let name = e.file_name().to_string_lossy().into_owned();
+                        // Zip files open like folders.
+                        is_dir |= vfs::is_zip_name(&name);
                         let p = e.path();
                         if !keep.keep(&p, &name, is_dir, platform::is_hidden(&e, &name)) {
                             return None;
@@ -845,6 +868,8 @@ impl App {
             Cmd::OpenExternal { path, with } => {
                 // On a worker thread: checking the file may be slow on a share.
                 std::thread::spawn(move || {
+                    // A file inside a zip opens from its extracted copy.
+                    let Ok(path) = vfs::local(&path).map(|p| p.to_string_lossy().into_owned()) else { return };
                     if !std::path::Path::new(&path).is_file() {
                         return;
                     }
@@ -869,8 +894,17 @@ impl App {
                 self.apply_settings(s);
             }
             Cmd::CopyFile { path } => {
-                let ok = platform::clipboard_files(&[path.clone()]);
-                self.flash(wid, None, if ok { format!("Copied {}", platform::file_name(&path)) } else { "Couldn't copy".into() });
+                let proxy = self.proxy.clone();
+                std::thread::spawn(move || {
+                    // A file inside a zip is copied from its extracted copy.
+                    let inside = vfs::container(&path).is_some();
+                    let msg = match vfs::local(&path) {
+                        _ if inside && vfs::is_dir(&path) => "Can't copy a folder inside a zip file".to_string(),
+                        Ok(l) if platform::clipboard_files(&[l.to_string_lossy().into_owned()]) => format!("Copied {}", platform::file_name(&path)),
+                        _ => "Couldn't copy".to_string(),
+                    };
+                    let _ = proxy.send_event(UserEvent::Flash(wid, None, msg));
+                });
             }
             Cmd::CopyPath { path } => {
                 let ok = platform::clipboard_text(&path);
@@ -891,7 +925,8 @@ impl App {
                         } else if let Some(text) = text_of_file(&file) {
                             (platform::clipboard_text(&text), "Copied the text")
                         } else {
-                            (platform::clipboard_files(&[file.clone()]), "Copied the file")
+                            let l = vfs::local(&file).map(|l| l.to_string_lossy().into_owned()).unwrap_or(file.clone());
+                            (platform::clipboard_files(&[l]), "Copied the file")
                         };
                         let msg = if ok { what } else { "Couldn't copy" };
                         let _ = proxy.send_event(UserEvent::Flash(wid, Some(id), msg.to_string()));
@@ -1122,7 +1157,8 @@ impl App {
         let mode = self.office_default(path).to_string();
         if matches!(mode.as_str(), "auto" | "previewer") {
             let hwnd = platform::window_handle(&self.shells[&p.shell].window);
-            match platform::Preview::open(hwnd, path, p.rect.get()) {
+            let local = vfs::local(path).map(|l| l.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string());
+            match platform::Preview::open(hwnd, &local, p.rect.get()) {
                 Ok(pv) => {
                     debug(|| format!("previewer for {path}"));
                     let p = self.panes.get_mut(&id).unwrap();
@@ -1631,6 +1667,7 @@ enum Phase {
 
 /// A file's text, if it is text (UTF-8 without NULs, at most 8 MB), for copying.
 fn text_of_file(path: &str) -> Option<String> {
+    let path = &vfs::local(path).ok()?.to_string_lossy().into_owned();
     let m = std::fs::metadata(path).ok()?;
     if m.len() > 8 << 20 {
         return None;

@@ -1080,9 +1080,13 @@ tree.addEventListener("contextmenu", (e) => {
 function openMenu(path, dir, x, y) {
   menuPath = path;
   menuDir = dir;
-  for (const el of menu.querySelectorAll(".m-file")) el.classList.toggle("hidden", menuDir);
-  for (const el of menu.querySelectorAll(".m-dir")) el.classList.toggle("hidden", !menuDir);
-  document.getElementById("m-openwith").classList.toggle("hidden", menuDir || !canOpenWith);
+  // Zip files open like folders but are files; things inside one have no place on disk.
+  const isZip = dir && /\.zip$/i.test(path), inZip = /\.zip[\\/]/i.test(path);
+  for (const el of menu.querySelectorAll(".m-file")) el.classList.toggle("hidden", menuDir && !isZip);
+  for (const el of menu.querySelectorAll(".m-dir")) el.classList.toggle("hidden", !menuDir || isZip || inZip);
+  document.getElementById("m-copy").classList.toggle("hidden", inZip && dir);
+  document.getElementById("m-openwith").classList.toggle("hidden", (menuDir && !isZip) || !canOpenWith);
+  
   document.getElementById("m-star").textContent = tagsOf(menuPath).includes(STAR) ? "Unstar" : "Star";
   menu.dataset.x = x; menu.dataset.y = y;
   menu.classList.remove("hidden");
