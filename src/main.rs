@@ -6,6 +6,7 @@
 //!   * the content webview (right): shows documents, untrusted, with no IPC at all.
 
 mod paths;
+mod gitfilter;
 mod render;
 mod state;
 
@@ -13,7 +14,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
-use tao::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
+use tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::window::{Window, WindowBuilder};
@@ -52,11 +53,12 @@ enum Cmd {
     List { path: String },
     Open { path: String },
     Expand { path: String, open: bool },
-    Sidebar { width: f64 },
+    Sidebar { width: f64, dpr: Option<f64> },
     AddRoot,
     RemoveRoot { path: String },
     MoveRoot { path: String, to: usize },
     Reload,
+    HideIgnored { hide: bool },
 }
 
 struct App {
@@ -72,6 +74,8 @@ struct App {
     current: Option<String>,
     restoring: bool,
     last_saved: Option<state::EnvState>,
+    /// Device pixel ratio of the UI webview, as it reports it.
+    ui_dpr: Option<f64>,
 }
 
 fn log(msg: &str) {
@@ -101,8 +105,9 @@ fn open_external(url: &str) {
 }
 
 /// Read a directory on a worker thread and report back.
-fn list_dir(path: String, proxy: EventLoopProxy<UserEvent>) {
+fn list_dir(path: String, hide_ignored: bool, proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
+        let filter = if hide_ignored { gitfilter::Filter::new(std::path::Path::new(&path)) } else { None };
         let msg = match std::fs::read_dir(&path) {
             Ok(rd) => {
                 let mut entries: Vec<(bool, String, String)> = rd
@@ -116,6 +121,7 @@ fn list_dir(path: String, proxy: EventLoopProxy<UserEvent>) {
                         let p = e.path().to_string_lossy().into_owned();
                         (is_dir, e.file_name().to_string_lossy().into_owned(), p)
                     })
+                    .filter(|(d, _, p)| filter.as_ref().map_or(true, |f| !f.is_ignored(std::path::Path::new(p), *d)))
                     .collect();
                 entries.sort_by(|a, b| {
                     b.0.cmp(&a.0)
@@ -194,16 +200,19 @@ impl App {
     }
 
     fn layout(&self) {
-        let scale = self.window.scale_factor();
-        let size: LogicalSize<f64> = self.window.inner_size().to_logical(scale);
+        // The sidebar width is in the UI webview's CSS pixels. Its device pixel ratio can
+        // differ from the window's scale factor (e.g. with Windows text scaling), so the UI
+        // reports it and we position the content view in physical pixels.
+        let size = self.window.inner_size();
+        let dpr = self.ui_dpr.unwrap_or_else(|| self.window.scale_factor());
         let _ = self.ui.set_bounds(Rect {
-            position: LogicalPosition::new(0.0, 0.0).into(),
-            size: LogicalSize::new(size.width, size.height).into(),
+            position: PhysicalPosition::new(0, 0).into(),
+            size: PhysicalSize::new(size.width, size.height).into(),
         });
-        let x = (self.st.sidebar_width + SPLITTER).min(size.width);
+        let x = (((self.st.sidebar_width + SPLITTER) * dpr).round() as u32).min(size.width);
         let _ = self.content.set_bounds(Rect {
-            position: LogicalPosition::new(x, 0.0).into(),
-            size: LogicalSize::new((size.width - x).max(0.0), size.height).into(),
+            position: PhysicalPosition::new(x as i32, 0).into(),
+            size: PhysicalSize::new(size.width - x, size.height).into(),
         });
     }
 
@@ -220,13 +229,14 @@ impl App {
             "expanded": self.st.expanded,
             "selected": self.st.open_file,
             "sidebar": self.st.sidebar_width,
+            "hideIgnored": self.st.hide_ignored,
         })
     }
 
     fn handle_cmd(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Ready => self.send_ui(&self.init_message()),
-            Cmd::List { path } => list_dir(path, self.proxy.clone()),
+            Cmd::List { path } => list_dir(path, self.st.hide_ignored, self.proxy.clone()),
             Cmd::Open { path } => self.open_file(&path),
             Cmd::Expand { path, open } => {
                 let changed = if open { self.st.expanded.insert(path) } else { self.st.expanded.remove(&path) };
@@ -234,12 +244,18 @@ impl App {
                     self.mark_dirty();
                 }
             }
-            Cmd::Sidebar { width } => {
-                if width.is_finite() {
-                    self.st.sidebar_width = width.clamp(120.0, 2000.0);
-                    self.layout();
-                    self.mark_dirty();
+            Cmd::Sidebar { width, dpr } => {
+                if let Some(d) = dpr.filter(|d| d.is_finite() && *d > 0.2 && *d < 10.0) {
+                    self.ui_dpr = Some(d);
                 }
+                if width.is_finite() {
+                    let w = width.clamp(120.0, 2000.0);
+                    if w != self.st.sidebar_width {
+                        self.st.sidebar_width = w;
+                        self.mark_dirty();
+                    }
+                }
+                self.layout();
             }
             Cmd::AddRoot => {
                 #[cfg(windows)]
@@ -266,6 +282,12 @@ impl App {
                     self.send_ui(&json!({"ev": "roots", "roots": self.st.roots}));
                     self.mark_dirty();
                 }
+            }
+            Cmd::HideIgnored { hide } => {
+                self.st.hide_ignored = hide;
+                gitfilter::clear_cache();
+                self.mark_dirty();
+                self.send_ui(&json!({"ev": "filter", "hideIgnored": hide}));
             }
             Cmd::Reload => {
                 let _ = self.content.reload();
@@ -483,6 +505,7 @@ fn main() {
         current: None,
         restoring: false,
         last_saved: None,
+        ui_dpr: None,
         save_at: None,
         next_poll: Instant::now() + SCROLL_POLL,
         st,

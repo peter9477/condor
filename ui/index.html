@@ -24,6 +24,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #bar button { border: 0; background: none; color: var(--fg); font: inherit; font-size: 15px; width: 26px; height: 24px;
   border-radius: 4px; cursor: pointer; }
 #bar button:hover { background: var(--hover); }
+#bar button.on { background: var(--sel); color: var(--cursor); }
 #tree { flex: 1; overflow: auto; padding: 4px 0 24px; outline: none; }
 #split { position: absolute; top: 0; bottom: 0; left: var(--w); width: 5px; cursor: col-resize; background: var(--split); }
 #split:hover, #split.drag { background: var(--cursor); }
@@ -50,6 +51,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 <div id="side">
   <div id="bar">
     <span class="title" id="envname">Condor</span>
+    <button id="filter" title="Hide git-ignored files">&#x2298;</button>
     <button id="add" title="Add a folder (root)">+</button>
     <button id="reload" title="Reload the open file (F5)">&#x21bb;</button>
   </div>
@@ -323,6 +325,16 @@ tree.addEventListener("drop", (e) => {
 });
 tree.addEventListener("dragend", () => { dragRoot = null; });
 
+const filterBtn = document.getElementById("filter");
+let hideIgnored = false;
+function showFilter() {
+  filterBtn.classList.toggle("on", hideIgnored);
+  filterBtn.title = hideIgnored ? "Git-ignored files are hidden (click to show them)" : "Hide git-ignored files";
+}
+filterBtn.onclick = () => post({cmd: "hideIgnored", hide: !hideIgnored});
+function relistAll() {
+  for (const [p, n] of nodes) if (n.dataset.dir && loaded.has(p)) post({cmd: "list", path: p});
+}
 document.getElementById("add").onclick = () => post({cmd: "addRoot"});
 document.getElementById("reload").onclick = () => post({cmd: "reload"});
 
@@ -339,14 +351,19 @@ split.addEventListener("pointermove", (e) => {
   const w = Math.max(140, Math.min(e.clientX, window.innerWidth - 200));
   setWidth(w);
   if (pending === null) {
-    pending = requestAnimationFrame(() => { pending = null; post({cmd: "sidebar", width: w}); });
+    pending = requestAnimationFrame(() => { pending = null; post({cmd: "sidebar", width: w, dpr: devicePixelRatio}); });
   }
 });
 split.addEventListener("pointerup", (e) => {
   split.releasePointerCapture(e.pointerId);
   split.classList.remove("drag");
   const w = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--w"));
-  post({cmd: "sidebar", width: w});
+  post({cmd: "sidebar", width: w, dpr: devicePixelRatio});
+});
+function currentWidth() { return parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--w")); }
+let lastDpr = 0;
+window.addEventListener("resize", () => {
+  if (devicePixelRatio !== lastDpr) { lastDpr = devicePixelRatio; post({cmd: "sidebar", width: currentWidth(), dpr: devicePixelRatio}); }
 });
 
 window.condor = {
@@ -358,6 +375,9 @@ window.condor = {
         reveal = !!selected;
         roots = msg.roots;
         setWidth(msg.sidebar);
+        hideIgnored = !!msg.hideIgnored; showFilter();
+        lastDpr = devicePixelRatio;
+        post({cmd: "sidebar", width: msg.sidebar, dpr: devicePixelRatio});
         document.getElementById("envname").textContent = msg.env === "default" ? "Condor" : msg.env;
         renderRoots();
         break;
@@ -368,6 +388,7 @@ window.condor = {
         break;
       case "list": onList(msg); break;
       case "selected": select(msg.path); break;
+      case "filter": hideIgnored = msg.hideIgnored; showFilter(); relistAll(); break;
     }
   }
 };
