@@ -36,7 +36,7 @@ cargo xwin build --release --target x86_64-pc-windows-msvc
 Or natively on Windows with the MSVC toolchain: `cargo build --release`.
 
 `tools/deploy.sh` (from WSL) builds and installs `%USERPROFILE%\.local\bin\condor.exe`.
-If Condor is running, the old exe is renamed to `condor.exe.old`, so open windows keep working.
+If Condor is running, the old exe is renamed to `condor.exe.old-<time>`, so open windows keep working and offer to restart into the new build.
 
 ## Security
 

@@ -1,6 +1,6 @@
 # Dev helper: launch Condor, screenshot its window, optionally close it gracefully.
 # powershell -File shot.ps1 -Exe C:\...\condor.exe -Out C:\...\shot.png [-CArgs "..."] [-Wait 5] [-Close]
-param([string]$Exe, [string]$Out, [string]$CArgs = "", [int]$Wait = 5, [switch]$Close, [switch]$Attach)
+param([string]$Exe, [string]$Out, [string]$CArgs = "", [int]$Wait = 5, [switch]$Close, [switch]$Attach, [int]$AttachPid = 0)
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System; using System.Runtime.InteropServices;
@@ -13,7 +13,7 @@ public class W {
 }
 "@
 [W]::SetProcessDPIAware() | Out-Null
-if ($Attach) { $p = Get-Process condor | Select-Object -First 1; $Wait = 0 }
+if ($Attach) { if ($AttachPid -eq 0) { throw "-Attach needs -AttachPid" }; $p = Get-Process -Id $AttachPid; $Wait = 0 }
 elseif ($CArgs) { $p = Start-Process -FilePath $Exe -ArgumentList $CArgs -PassThru } else { $p = Start-Process -FilePath $Exe -PassThru }
 Start-Sleep -Seconds $Wait
 $p.Refresh()

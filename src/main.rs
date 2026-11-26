@@ -9,8 +9,10 @@ mod filters;
 mod paths;
 mod platform;
 mod gitfilter;
+mod highlight;
 mod render;
 mod state;
+mod update;
 mod watch;
 
 use serde::Deserialize;
@@ -51,6 +53,10 @@ enum UserEvent {
     FileChanged(String, bool),
     /// Reload the content view, first recording this scroll position for the file.
     ReloadAt(String, f64),
+    /// A new build of condor.exe has been installed where we were started from.
+    UpdateAvailable,
+    /// Restart into the new build, first recording this scroll position (url, y).
+    RestartAt(String, f64),
 }
 
 #[derive(Deserialize, Debug)]
@@ -67,6 +73,7 @@ enum Cmd {
     Reload,
     Dismiss,
     AutoReload { path: String, on: bool },
+    Restart,
     SetFilters { show_hidden: bool, hide_ignored: bool, viewable_only: bool, excludes: Vec<String> },
 }
 
@@ -89,6 +96,9 @@ struct App {
     filters: Arc<filters::Filters>,
     /// The "file changed on disk" banner is showing.
     banner: bool,
+    /// The exe we were started from, and whether a newer build has replaced it.
+    exe: Option<std::path::PathBuf>,
+    update_ready: bool,
 }
 
 fn log(msg: &str) {
@@ -218,6 +228,7 @@ impl App {
         json!({
             "ev": "init",
             "env": self.env,
+            "update": self.update_ready,
             "roots": self.st.roots,
             "expanded": self.st.expanded,
             "selected": self.st.open_file,
@@ -271,6 +282,23 @@ impl App {
                     self.st.roots.insert(to, r);
                     self.send_ui(&json!({"ev": "roots", "roots": self.st.roots}));
                     self.mark_dirty();
+                }
+            }
+            Cmd::Restart => {
+                // Record the scroll position first; the reply arrives as RestartAt.
+                let proxy = self.proxy.clone();
+                let ok = self.content.evaluate_script_with_callback("[location.href, window.scrollY]", move |res| {
+                    let (u, y) = match serde_json::from_str::<serde_json::Value>(&res) {
+                        Ok(serde_json::Value::Array(v)) => (
+                            v.first().and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                            v.get(1).and_then(|x| x.as_f64()).unwrap_or(f64::NAN),
+                        ),
+                        _ => (String::new(), f64::NAN),
+                    };
+                    let _ = proxy.send_event(UserEvent::RestartAt(u, y));
+                });
+                if ok.is_err() {
+                    let _ = self.proxy.send_event(UserEvent::RestartAt(String::new(), f64::NAN));
                 }
             }
             Cmd::SetFilters { show_hidden, hide_ignored, viewable_only, excludes } => {
@@ -415,6 +443,21 @@ impl App {
                 }
             },
         );
+    }
+
+    /// Save everything, start the new build with the same environment, and return true if
+    /// it started (the caller then exits).
+    fn restart(&mut self, url: &str, y: f64) -> bool {
+        self.on_scroll(url, y);
+        self.save_now();
+        let Some(exe) = &self.exe else { return false };
+        match std::process::Command::new(exe).args(["--env", &self.env]).spawn() {
+            Ok(_) => true,
+            Err(e) => {
+                log(&format!("restart failed: {e}"));
+                false
+            }
+        }
     }
 
     fn on_scroll(&mut self, url: &str, y: f64) {
@@ -571,6 +614,8 @@ fn main() {
         ui_dpr: None,
         watcher,
         banner: false,
+        exe: update::exe_path(),
+        update_ready: false,
         filters: Arc::new(filters::Filters::from_state(&st)),
         save_at: None,
         next_poll: Instant::now() + SCROLL_POLL,
@@ -582,6 +627,12 @@ fn main() {
     };
     app.layout();
     app.save_now();
+    if let Some(exe) = app.exe.clone() {
+        let p = app.proxy.clone();
+        update::watch(exe, move || {
+            let _ = p.send_event(UserEvent::UpdateAvailable);
+        });
+    }
     let _ctx = ctx; // keep the web context alive for the life of the app
 
     event_loop.run(move |event, _target, control_flow| {
@@ -601,6 +652,16 @@ fn main() {
                 UserEvent::Scroll(url, y) => app.on_scroll(&url, y),
                 UserEvent::FileChanged(p, deleted) => app.on_file_changed(&p, deleted),
                 UserEvent::ReloadAt(url, y) => app.on_reload_at(&url, y),
+                UserEvent::UpdateAvailable => {
+                    app.update_ready = true;
+                    app.send_ui(&json!({"ev": "update"}));
+                }
+                UserEvent::RestartAt(url, y) => {
+                    if app.restart(&url, y) {
+                        *control_flow = ControlFlow::Exit;
+                        return;
+                    }
+                }
                 UserEvent::LoadContent(url) => {
                     let _ = app.content.load_url(&url);
                 }

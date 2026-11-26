@@ -6,7 +6,8 @@
 //! forbids scripts.
 
 use crate::paths;
-use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd};
+use crate::highlight;
+use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 use std::borrow::Cow;
 use std::io::Read;
 use wry::http::{header, Response, StatusCode};
@@ -159,12 +160,13 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
         };
     }
     match read_text(&path, meta.len()) {
-        Ok(t) => html_page(
-            StatusCode::OK,
-            file_name(&path),
-            "text",
-            &format!("<pre class=\"text\">{}</pre>", escape(&t)),
-        ),
+        Ok(t) => {
+            let body = match highlight::for_file(&ext, &t).and_then(|s| highlight::to_html(&t, s)) {
+                Some(h) => format!("{}<pre class=\"text src\">{}</pre>", highlight::style_tag(), h),
+                None => format!("<pre class=\"text\">{}</pre>", escape(&t)),
+            };
+            html_page(StatusCode::OK, file_name(&path), "text", &body)
+        }
         Err(r) => r,
     }
 }
@@ -274,7 +276,55 @@ pub fn render_markdown(src: &str) -> String {
         }
         i += 1;
     }
+    let (events, coloured) = highlight_code_blocks(events);
     let mut out = String::with_capacity(src.len() * 3 / 2);
+    if coloured {
+        out.push_str(highlight::style_tag());
+    }
     pulldown_cmark::html::push_html(&mut out, events.into_iter());
     out
+}
+
+/// Replace fenced code blocks whose language we know with highlighted HTML.
+fn highlight_code_blocks(events: Vec<Event>) -> (Vec<Event>, bool) {
+    let mut out = Vec::with_capacity(events.len());
+    let mut coloured = false;
+    let mut it = events.into_iter();
+    while let Some(ev) = it.next() {
+        let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) = &ev else {
+            out.push(ev);
+            continue;
+        };
+        let Some(syntax) = highlight::for_lang(lang) else {
+            out.push(ev);
+            continue;
+        };
+        let mut inner = Vec::new();
+        let mut code = String::new();
+        for e in it.by_ref() {
+            if matches!(e, Event::End(TagEnd::CodeBlock)) {
+                break;
+            }
+            if let Event::Text(t) = &e {
+                code.push_str(t);
+            }
+            inner.push(e);
+        }
+        match highlight::to_html(&code, syntax) {
+            Some(h) => {
+                coloured = true;
+                out.push(Event::Html(CowStr::from(format!(
+                    "<pre><code class=\"language-{}\">{}</code></pre>\n",
+                    escape(lang),
+                    h
+                ))));
+            }
+            None => {
+                out.push(ev);
+                out.extend(inner);
+                out.push(Event::End(TagEnd::CodeBlock));
+            }
+        }
+    }
+    (out, coloured)
 }
