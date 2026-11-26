@@ -24,7 +24,7 @@ pub struct Filters {
 }
 
 impl Filters {
-    pub fn from_state(st: &EnvState) -> Filters {
+    pub fn from_state(st: &EnvState, settings: &crate::state::Settings) -> Filters {
         let mut excludes = Vec::new();
         let pats: Vec<&str> = st
             .excludes
@@ -47,7 +47,7 @@ impl Filters {
             show_hidden: st.show_hidden,
             hide_ignored: st.hide_ignored,
             viewable_only: st.viewable_only,
-            exts: st.viewable_exts.iter().map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase()).collect(),
+            exts: settings.viewable_exts.iter().map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase()).collect(),
             excludes,
         }
     }

@@ -38,7 +38,6 @@ pub struct EnvState {
     pub show_hidden: bool,
     /// Show only files with a viewable extension (folders are always shown).
     pub viewable_only: bool,
-    pub viewable_exts: Vec<String>,
     /// Exclude patterns (gitignore syntax, relative to each root).
     pub excludes: Vec<String>,
     /// Files that reload automatically when they change on disk.
@@ -60,7 +59,6 @@ impl Default for EnvState {
             auto_reload: BTreeSet::new(),
             show_hidden: false,
             viewable_only: false,
-            viewable_exts: crate::filters::DEFAULT_VIEWABLE.iter().map(|s| s.to_string()).collect(),
             excludes: Vec::new(),
         }
     }
@@ -110,5 +108,65 @@ pub fn save(name: &str, st: &EnvState) -> std::io::Result<()> {
     }
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(st).unwrap_or_default())?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Settings shared by every Condor window and environment (`settings.json` beside the
+/// environments folder). Windows notice changes within a couple of seconds.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Settings {
+    /// Extensions shown by the "only viewable file types" filter (without the dot).
+    pub viewable_exts: Vec<String>,
+    /// How documents use the pane's width: "narrow", "wide" (tables and code) or "full".
+    pub doc_width: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            viewable_exts: crate::filters::DEFAULT_VIEWABLE.iter().map(|s| s.to_string()).collect(),
+            doc_width: "wide".to_string(),
+        }
+    }
+}
+
+impl Settings {
+    /// Tidy user input: extensions lower-case without dots, no blanks or repeats.
+    pub fn normalised(mut self) -> Settings {
+        let mut seen = std::collections::HashSet::new();
+        self.viewable_exts = self
+            .viewable_exts
+            .iter()
+            .flat_map(|s| s.split([',', ' ', '\n', ';']))
+            .map(|e| e.trim().trim_start_matches("*.").trim_start_matches('.').to_ascii_lowercase())
+            .filter(|e| !e.is_empty() && seen.insert(e.clone()))
+            .collect();
+        if !matches!(self.doc_width.as_str(), "narrow" | "wide" | "full") {
+            self.doc_width = "wide".into();
+        }
+        self
+    }
+}
+
+pub fn settings_file() -> PathBuf {
+    config_dir().join("settings.json")
+}
+
+pub fn load_settings() -> Settings {
+    std::fs::read(settings_file())
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
+        .unwrap_or_default()
+        .normalised()
+}
+
+pub fn save_settings(s: &Settings) -> std::io::Result<()> {
+    let path = settings_file();
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(s).unwrap_or_default())?;
     std::fs::rename(&tmp, &path)
 }

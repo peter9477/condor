@@ -84,6 +84,8 @@ enum Cmd {
     Forward,
     /// Switch the open file between its rendered and source views.
     ToggleSource,
+    /// Change the global settings (saved, and picked up by other windows).
+    SetSettings { settings: state::Settings },
     /// Open a file in another application (`with`: let the user choose which).
     OpenExternal { path: String, with: bool },
     SetFilters { show_hidden: bool, hide_ignored: bool, viewable_only: bool, excludes: Vec<String> },
@@ -113,6 +115,9 @@ struct App {
     /// The exe we were started from, and whether a newer build has replaced it.
     exe: Option<std::path::PathBuf>,
     update_ready: bool,
+    /// Global settings, and the settings file's signature when last read or written.
+    settings: state::Settings,
+    settings_sig: watch::Sig,
 }
 
 fn log(msg: &str) {
@@ -246,7 +251,7 @@ impl App {
     }
 
     fn rebuild_filters(&mut self) {
-        self.filters = Arc::new(filters::Filters::from_state(&self.st));
+        self.filters = Arc::new(filters::Filters::from_state(&self.st, &self.settings));
         render::set_roots(&self.st.roots);
     }
 
@@ -257,6 +262,7 @@ impl App {
             "update": self.update_ready,
             "roots": self.st.roots,
             "openWith": platform::CAN_OPEN_WITH,
+            "settings": self.settings,
             "expanded": self.st.expanded,
             "selected": self.st.open_file,
             "sidebar": self.st.sidebar_width,
@@ -353,6 +359,14 @@ impl App {
                 {
                     platform::open_path(&path);
                 }
+            }
+            Cmd::SetSettings { settings } => {
+                let s = settings.normalised();
+                if let Err(e) = state::save_settings(&s) {
+                    log(&format!("saving settings failed: {e}"));
+                }
+                self.settings_sig = watch::signature(&state::settings_file().to_string_lossy());
+                self.apply_settings(s);
             }
             Cmd::ToggleSource => {
                 if let Some(p) = self.current.clone().filter(|p| render::has_source_view(p)) {
@@ -513,6 +527,31 @@ impl App {
         self.restoring = false;
         // Give the restore a moment before polling, so we don't record a pre-restore 0.
         self.next_poll = Instant::now() + Duration::from_millis(3500);
+    }
+
+/// Pick up settings changed by another window.
+    fn check_settings(&mut self) {
+        let sig = watch::signature(&state::settings_file().to_string_lossy());
+        if sig != self.settings_sig {
+            self.settings_sig = sig;
+            self.apply_settings(state::load_settings());
+        }
+    }
+
+    fn apply_settings(&mut self, s: state::Settings) {
+        if s == self.settings {
+            return;
+        }
+        let old = std::mem::replace(&mut self.settings, s);
+        if old.viewable_exts != self.settings.viewable_exts {
+            self.rebuild_filters();
+            self.send_ui(&json!({"ev": "filter", "filters": self.filter_state()}));
+        }
+        if old.doc_width != self.settings.doc_width {
+            render::set_width(&self.settings.doc_width);
+            self.reload_keep_scroll();
+        }
+        self.send_ui(&json!({"ev": "settings", "settings": self.settings}));
     }
 
     fn poll_scroll(&mut self) {
@@ -714,6 +753,8 @@ fn main() {
 
 
     render::set_roots(&st.roots);
+    let settings = state::load_settings();
+    render::set_width(&settings.doc_width);
     let mut app = App {
         env,
         current: None,
@@ -725,7 +766,9 @@ fn main() {
         banner: false,
         exe: update::exe_path(),
         update_ready: false,
-        filters: Arc::new(filters::Filters::from_state(&st)),
+        filters: Arc::new(filters::Filters::from_state(&st, &settings)),
+        settings_sig: watch::signature(&state::settings_file().to_string_lossy()),
+        settings,
         save_at: None,
         next_poll: Instant::now() + SCROLL_POLL,
         st,
@@ -800,6 +843,7 @@ fn main() {
         let now = Instant::now();
         if now >= app.next_poll {
             app.poll_scroll();
+            app.check_settings();
         }
         if app.save_at.map_or(false, |t| now >= t) {
             app.save_now();

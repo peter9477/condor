@@ -47,11 +47,30 @@ pub fn escape(s: &str) -> String {
     o
 }
 
+/// How documents use the pane's width: "narrow", "wide" or "full" (see doc.css).
+static WIDTH: RwLock<&'static str> = RwLock::new("wide");
+
+pub fn set_width(mode: &str) {
+    let m = match mode {
+        "narrow" => "narrow",
+        "full" => "full",
+        _ => "wide",
+    };
+    if let Ok(mut w) = WIDTH.write() {
+        *w = m;
+    }
+}
+
+fn width_class() -> String {
+    format!("w-{}", WIDTH.read().map_or("wide", |w| *w))
+}
+
 fn page(title: &str, class: &str, body: &str) -> Vec<u8> {
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\">\
+        "<!doctype html><html class=\"{}\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>{}</title><style>{}</style></head><body class=\"{}\">{}</body></html>",
+        width_class(),
         escape(title),
         DOC_CSS,
         class,
@@ -289,7 +308,9 @@ pub fn render_markdown(src: &str, dir: Option<&Path>) -> String {
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_GFM
-        | Options::ENABLE_DEFINITION_LIST;
+        | Options::ENABLE_DEFINITION_LIST
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS;
     let mut events: Vec<Event> = Parser::new_ext(src, opts).collect();
 
     // Give headings GitHub-style ids so in-page links (#section) work.
@@ -320,6 +341,7 @@ pub fn render_markdown(src: &str, dir: Option<&Path>) -> String {
         Some(d) => link_code_paths(events, d),
         None => events,
     };
+    let events = front_matter(events);
     let (events, coloured) = highlight_code_blocks(events);
     let mut out = String::with_capacity(src.len() * 3 / 2);
     if coloured {
@@ -327,6 +349,64 @@ pub fn render_markdown(src: &str, dir: Option<&Path>) -> String {
     }
     pulldown_cmark::html::push_html(&mut out, events.into_iter());
     out
+}
+
+/// Front matter (`---` YAML or `+++` TOML at the top) as a small key/value table, or as
+/// preformatted text if it isn't simple `key: value` lines.
+fn front_matter(events: Vec<Event>) -> Vec<Event> {
+    let mut out = Vec::with_capacity(events.len());
+    let mut it = events.into_iter();
+    while let Some(ev) = it.next() {
+        if !matches!(ev, Event::Start(Tag::MetadataBlock(_))) {
+            out.push(ev);
+            continue;
+        }
+        let mut text = String::new();
+        for e in it.by_ref() {
+            match e {
+                Event::End(TagEnd::MetadataBlock(_)) => break,
+                Event::Text(t) => text.push_str(&t),
+                _ => {}
+            }
+        }
+        out.push(Event::Html(CowStr::from(front_matter_html(&text))));
+    }
+    out
+}
+
+fn front_matter_html(text: &str) -> String {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        // `key: value` (YAML) or `key = value` (TOML) at the start of a line.
+        let key_line = (!line.starts_with([' ', '\t', '-']))
+            .then(|| line.split_once([':', '=']))
+            .flatten()
+            .filter(|(k, _)| !k.trim().is_empty() && !k.trim().contains(' '));
+        match key_line {
+            Some((k, v)) => rows.push((k.trim().to_string(), v.trim().trim_matches('"').to_string())),
+            // Continuation lines (lists, indented or wrapped values) join the previous key.
+            None => match rows.last_mut() {
+                Some((_, v)) => {
+                    if !v.is_empty() {
+                        v.push('\n');
+                    }
+                    v.push_str(t);
+                }
+                None => return format!("<pre class=\"front-matter\">{}</pre>", escape(text)),
+            },
+        }
+    }
+    let mut html = String::from("<table class=\"front-matter\"><tbody>");
+    for (k, v) in rows {
+        let v = escape(&v).replace('\n', "<br>");
+        html.push_str(&format!("<tr><th>{}</th><td>{}</td></tr>", escape(&k), v));
+    }
+    html.push_str("</tbody></table>\n");
+    html
 }
 
 /// Replace fenced code blocks whose language we know with highlighted HTML.

@@ -47,13 +47,13 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 .hidden { display: none !important; }
 #empty { padding: 24px 16px; color: var(--muted); }
 #empty button { margin-top: 8px; font: inherit; padding: 4px 10px; }
-#fpanel { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
-#fpanel label { display: flex; align-items: center; gap: 6px; }
-#fpanel .flabel { margin-top: 4px; color: var(--muted); }
-#fpanel textarea { width: 100%; font: 12px ui-monospace, Consolas, monospace; resize: vertical; background: var(--bg);
+#fpanel, #spanel { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+#fpanel label, #spanel label { display: flex; align-items: center; gap: 6px; }
+#fpanel .flabel, #spanel .flabel { margin-top: 4px; color: var(--muted); }
+#fpanel textarea, #spanel textarea { width: 100%; font: 12px ui-monospace, Consolas, monospace; resize: vertical; background: var(--bg);
   color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px; user-select: text; }
-#fpanel .fbtns { display: flex; justify-content: flex-end; }
-#fpanel button { font: inherit; padding: 2px 12px; }
+#fpanel .fbtns, #spanel .fbtns { display: flex; justify-content: flex-end; }
+#fpanel button, #spanel button { font: inherit; padding: 2px 12px; }
 #banner { position: absolute; left: calc(var(--w) + 5px); right: 0; top: 0; height: 34px; display: flex; align-items: center;
   gap: 8px; padding: 0 10px; background: #fff8c5; color: #3b2300; border-bottom: 1px solid #d4a72c; white-space: nowrap; overflow: hidden; }
 @media (prefers-color-scheme: dark) { #banner { background: #3a2f0b; color: #f2e3b3; border-color: #9e6a03; } }
@@ -89,6 +89,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
     <button id="auto" title="Reload the open file automatically when it changes" disabled>AUTO</button>
     <button id="filter" title="Filters: hidden files, file types, exclusions">&#x29e9;</button>
     <button id="add" title="Add a folder (root)">+</button>
+    <button id="gear" title="Settings (shared by all Condor windows)">&#x2699;</button>
     <button id="reload" title="Reload the open file (F5)">&#x21bb;</button>
   </div>
   <div id="fpanel" class="hidden">
@@ -98,6 +99,16 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
     <div class="flabel">Exclude (one pattern per line, .gitignore syntax):</div>
     <textarea id="f-excludes" rows="4" spellcheck="false" placeholder="node_modules/&#10;target/&#10;*.lock"></textarea>
     <div class="fbtns"><button id="f-apply">Apply</button></div>
+  </div>
+  <div id="spanel" class="hidden">
+    <div class="flabel">Document width:</div>
+    <label><input type="radio" name="s-width" value="wide"> Wide tables and code; text at reading width</label>
+    <label><input type="radio" name="s-width" value="full"> Full width</label>
+    <label><input type="radio" name="s-width" value="narrow"> Reading width only</label>
+    <div class="flabel">Viewable file types (for "Only viewable file types"):</div>
+    <textarea id="s-exts" rows="4" spellcheck="false"></textarea>
+    <div class="fnote">Shared by all Condor windows.</div>
+    <div class="fbtns"><button id="s-apply">Apply</button></div>
   </div>
   <div id="tree" tabindex="0"></div>
 </div>
@@ -500,7 +511,7 @@ function sendFilters() {
         viewable_only: document.getElementById("f-viewable").checked,
         excludes: document.getElementById("f-excludes").value.split(/\r?\n/)});
 }
-filterBtn.onclick = () => fpanel.classList.toggle("hidden");
+filterBtn.onclick = () => { if (!fpanel.classList.toggle("hidden")) { spanel.classList.add("hidden"); document.getElementById("gear").classList.remove("on"); } };
 for (const id of ["f-hidden", "f-ignored", "f-viewable"]) document.getElementById(id).onchange = sendFilters;
 document.getElementById("f-apply").onclick = sendFilters;
 function relistAll() {
@@ -509,6 +520,24 @@ function relistAll() {
 document.getElementById("add").onclick = () => post({cmd: "addRoot"});
 document.getElementById("reload").onclick = () => post({cmd: "reload"});
 document.getElementById("back").onclick = () => post({cmd: "back"});
+// Settings panel (global: saved to settings.json, picked up by every window).
+let settings = {viewable_exts: [], doc_width: "wide"};
+const spanel = document.getElementById("spanel");
+function showSettings() {
+  for (const r of document.querySelectorAll('input[name="s-width"]')) r.checked = r.value === settings.doc_width;
+  document.getElementById("s-exts").value = settings.viewable_exts.join(" ");
+}
+document.getElementById("gear").onclick = () => {
+  const open = spanel.classList.toggle("hidden") === false;
+  document.getElementById("gear").classList.toggle("on", open);
+  if (open) { fpanel.classList.add("hidden"); showSettings(); }
+};
+document.getElementById("s-apply").onclick = () => {
+  const w = document.querySelector('input[name="s-width"]:checked');
+  post({cmd: "setSettings", settings: {
+    viewable_exts: document.getElementById("s-exts").value.split(/[\s,;]+/).filter(Boolean),
+    doc_width: w ? w.value : "wide"}});
+};
 document.getElementById("src").onclick = () => post({cmd: "toggleSource"});
 document.getElementById("fwd").onclick = () => post({cmd: "forward"});
 // The mouse's own back/forward buttons, when the pointer is over the sidebar.
@@ -548,6 +577,7 @@ window.condor = {
   recv(msg) {
     switch (msg.ev) {
       case "update": document.getElementById("update").classList.remove("hidden"); break;
+      case "settings": settings = msg.settings; if (spanel.classList.contains("hidden")) showSettings(); break;
       case "view": {
         const b = document.getElementById("src");
         b.classList.toggle("hidden", !msg.can);
@@ -568,6 +598,7 @@ window.condor = {
         setWidth(msg.sidebar);
         filters = msg.filters; showFilter();
         canOpenWith = !!msg.openWith;
+        settings = msg.settings; showSettings();
         lastDpr = devicePixelRatio;
         post({cmd: "sidebar", width: msg.sidebar, dpr: devicePixelRatio});
         document.getElementById("envname").textContent = msg.env === "default" ? "Condor" : msg.env;

@@ -14,7 +14,13 @@ body {
   margin: 0; padding: 24px 32px 64px;
   font: 16px/1.5 -apple-system, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
 }
-body.markdown-body { max-width: 980px; }
+/* Width modes, set on <html> by Condor: readable column; wide tables and code (text stays
+   readable); everything full width. */
+html.w-narrow body.markdown-body { max-width: 980px; }
+html.w-wide body.markdown-body > :not(table, pre, .front-matter) { max-width: 980px; }
+/* YAML front matter, shown as a small key/value table. */
+table.front-matter { font-size: 85%; color: var(--muted); }
+table.front-matter th { text-align: left; white-space: nowrap; vertical-align: top; }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 h1, h2, h3, h4, h5, h6 { margin: 24px 0 16px; font-weight: 600; line-height: 1.25; }

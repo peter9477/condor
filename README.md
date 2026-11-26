@@ -69,4 +69,15 @@ MIT or Apache-2.0, at your option.
 - When the open file changes on disk, a banner offers Reload, and you keep seeing the old version until you choose it.
   **AUTO** (or "Always auto-reload this file") makes that file reload by itself, keeping the scroll position.
 
+## Settings
+
+The ⚙ button opens settings shared by every Condor window (`%APPDATA%\Condor\settings.json`;
+other open windows pick up changes within a couple of seconds):
+
+- Document width: wide tables and code with text at reading width (default), full width, or
+  reading width only.
+- The file types that count as viewable for the "Only viewable file types" filter.
+
+Markdown front matter (`---` YAML or `+++` TOML at the top of a file) is shown as a small table.
+
 See [ROADMAP.md](ROADMAP.md) for planned features.
