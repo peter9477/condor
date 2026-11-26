@@ -64,8 +64,9 @@ enum UserEvent {
     PageLoaded(PaneId, String),
     /// Polled view state of a pane: (url, scroll y, selection).
     Scroll(PaneId, String, f64, serde_json::Value),
-    /// Load this URL in a pane (e.g. a target=_blank link to a local file).
-    LoadContent(PaneId, String),
+    /// A document asked to open a local file in a new window ("Open link in new window",
+    /// Ctrl+click, target=_blank): open it in a pop-out.
+    OpenWindow(String),
     /// The file shown can't be previewed (binary or too large); offer to open it elsewhere.
     NoPreview(PaneId, String),
     /// The file in a pane changed on disk: (path, deleted).
@@ -319,7 +320,7 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
         })
         .with_new_window_req_handler(move |url, _features| {
             if url.starts_with(&fo2) {
-                let _ = p_new.send_event(UserEvent::LoadContent(id, url));
+                let _ = p_new.send_event(UserEvent::OpenWindow(url));
             } else {
                 platform::open_external(&url);
             }
@@ -438,9 +439,14 @@ impl App {
     // ----- windows and panes ----------------------------------------------------------
 
     fn add_pane(&mut self, wid: WindowId, file: Option<&str>) -> PaneId {
+        let url = file.map(|f| self.url_for(f));
+        self.add_pane_url(wid, url)
+    }
+
+    fn add_pane_url(&mut self, wid: WindowId, url: Option<String>) -> PaneId {
         let id = self.next_pane;
         self.next_pane += 1;
-        let url = file.map(|f| self.url_for(f)).unwrap_or_else(|| format!("{}/", paths::file_origin()));
+        let url = url.unwrap_or_else(|| format!("{}/", paths::file_origin()));
         let window = &self.shells[&wid].window;
         let (content, watcher) = build_content(&mut self.ctx, window, &self.proxy, id, &url);
         self.panes.insert(
@@ -464,6 +470,12 @@ impl App {
 
     /// A new pop-out window showing `file`.
     fn pop_out(&mut self, target: &EventLoopWindowTarget<UserEvent>, file: Option<&str>, geom: Option<state::WinGeom>) {
+        let url = file.map(|f| self.url_for(f));
+        self.pop_out_url(target, url, geom);
+    }
+
+    /// A new pop-out window showing this content URL (it may carry a query or #fragment).
+    fn pop_out_url(&mut self, target: &EventLoopWindowTarget<UserEvent>, url: Option<String>, geom: Option<state::WinGeom>) {
         let geom = geom.or_else(|| {
             // Cascade from the main window.
             let w = &self.shells.get(&self.main)?.window;
@@ -478,7 +490,7 @@ impl App {
             })
         });
         let wid = self.create_shell(target, Kind::Popout, geom);
-        let id = self.add_pane(wid, file);
+        let id = self.add_pane_url(wid, url);
         if let Some(sh) = self.shells.get_mut(&wid) {
             sh.focused = id;
         }
@@ -1198,11 +1210,7 @@ fn main() {
                 UserEvent::FileChanged(id, p, deleted) => app.on_file_changed(id, &p, deleted),
                 UserEvent::ReloadAt(id, url, y) => app.on_reload_at(id, &url, y),
                 UserEvent::NoPreview(id, path) => app.on_no_preview(id, &path),
-                UserEvent::LoadContent(id, url) => {
-                    if let Some(p) = app.panes.get(&id) {
-                        let _ = p.content.load_url(&url);
-                    }
-                }
+                UserEvent::OpenWindow(url) => app.pop_out_url(target, Some(url), None),
                 UserEvent::Focus(id) => app.set_focus(id),
                 UserEvent::UpdateAvailable => {
                     app.update_ready = true;
