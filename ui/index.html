@@ -73,6 +73,12 @@ body.popout #side, body.popout #split { display: none; }
 .hidden { display: none !important; }
 #empty { padding: 24px 16px; color: var(--muted); }
 #empty button { margin-top: 8px; font: inherit; padding: 4px 10px; }
+/* The panels' close box, top right. */
+#fpanel, #spanel { position: relative; }
+#tagbox .tb-title { padding-right: 22px; }
+#fpanel .pclose, #spanel .pclose, #tagbox .pclose { position: absolute; top: 4px; right: 6px; border: 0; background: none;
+  color: var(--muted); font-size: 16px; line-height: 1; padding: 2px 5px; border-radius: 4px; cursor: pointer; }
+#fpanel .pclose:hover, #spanel .pclose:hover, #tagbox .pclose:hover { background: var(--hover); color: var(--fg); }
 #fpanel, #spanel { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
 #fpanel label, #spanel label { display: flex; align-items: center; gap: 6px; }
 #fpanel .flabel, #spanel .flabel { margin-top: 4px; color: var(--muted); }
@@ -159,6 +165,7 @@ body.popout #side, body.popout #split { display: none; }
     <button id="gear" title="Settings (shared by all Condor windows)"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><mask id="gear-hole"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="12" r="3.2" fill="#000"/></mask><g fill="currentColor" mask="url(#gear-hole)"><circle cx="12" cy="12" r="7.2"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(45 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(90 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(135 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(180 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(225 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(270 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(315 12 12)"/></g></svg></button>
   </div>
   <div id="fpanel" class="hidden">
+    <button class="pclose" title="Close (Esc)">&#x00d7;</button>
     <label><input type="checkbox" id="f-hidden"> Show hidden files (dot files)</label>
     <label><input type="checkbox" id="f-ignored"> Hide git-ignored files</label>
     <label><input type="checkbox" id="f-viewable"> Only viewable file types</label>
@@ -167,6 +174,7 @@ body.popout #side, body.popout #split { display: none; }
     <div class="fbtns"><button id="f-apply">Apply</button></div>
   </div>
   <div id="spanel" class="hidden">
+    <button class="pclose" title="Close (Esc)">&#x00d7;</button>
     <div class="flabel">Document width:</div>
     <label><input type="radio" name="s-width" value="wide"> Wide tables and code; text at reading width</label>
     <label><input type="radio" name="s-width" value="full"> Full width</label>
@@ -233,6 +241,7 @@ body.popout #side, body.popout #split { display: none; }
   </div>
 </template>
 <div id="tagbox" class="hidden">
+  <button class="pclose" title="Close (Esc)">&#x00d7;</button>
   <div class="tb-title"></div>
   <label><input type="checkbox" class="tb-star"> <span class="star" style="margin:0">&#x2605;</span> Starred</label>
   <div class="tb-list"></div>
@@ -1170,6 +1179,20 @@ function showSettings() {
   }
   document.getElementById("s-exts").value = settings.viewable_exts.join(" ");
 }
+// Close boxes and Esc close the panels.
+function closePanels() {
+  fpanel.classList.add("hidden");
+  spanel.classList.add("hidden");
+  document.getElementById("gear").classList.remove("on");
+}
+fpanel.querySelector(".pclose").onclick = closePanels;
+spanel.querySelector(".pclose").onclick = closePanels;
+tagbox.querySelector(".pclose").onclick = () => hideTagbox();
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!tagbox.classList.contains("hidden")) hideTagbox();
+  else if (!fpanel.classList.contains("hidden") || !spanel.classList.contains("hidden")) closePanels();
+});
 document.getElementById("gear").onclick = () => {
   const open = spanel.classList.toggle("hidden") === false;
   document.getElementById("gear").classList.toggle("on", open);
