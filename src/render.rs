@@ -10,6 +10,8 @@ use crate::highlight;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 use std::borrow::Cow;
 use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::sync::RwLock;
 use wry::http::{header, Response, StatusCode};
 
 pub type Resp = Response<Cow<'static, [u8]>>;
@@ -140,7 +142,7 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
     if !raw && is_markdown(&ext) {
         return match read_text(&path, meta.len()) {
             Ok(t) => {
-                let body = render_markdown(&t);
+                let body = render_markdown(&t, Path::new(&path).parent());
                 html_page(StatusCode::OK, file_name(&path), "markdown-body", &body)
             }
             Err(r) => r,
@@ -243,7 +245,7 @@ fn slugify(text: &str) -> String {
         .collect()
 }
 
-pub fn render_markdown(src: &str) -> String {
+pub fn render_markdown(src: &str, dir: Option<&Path>) -> String {
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
@@ -276,6 +278,10 @@ pub fn render_markdown(src: &str) -> String {
         }
         i += 1;
     }
+    let events = match dir {
+        Some(d) => link_code_paths(events, d),
+        None => events,
+    };
     let (events, coloured) = highlight_code_blocks(events);
     let mut out = String::with_capacity(src.len() * 3 / 2);
     if coloured {
@@ -327,4 +333,127 @@ fn highlight_code_blocks(events: Vec<Event>) -> (Vec<Event>, bool) {
         }
     }
     (out, coloured)
+}
+
+/// The tree's root folders, so `src/main.rs` in a document can be found relative to the
+/// project as well as to the document's own folder.
+static ROOTS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+pub fn set_roots(roots: &[String]) {
+    if let Ok(mut r) = ROOTS.write() {
+        *r = roots.to_vec();
+    }
+}
+
+/// At most this many file lookups per document, so a long one stays quick over \\wsl$.
+const MAX_LOOKUPS: usize = 300;
+
+/// If inline code looks like a relative file path (`src/main.rs`, `../README.md`,
+/// `ui/index.html:42`), the path part, without any `:line[:col]` suffix.
+fn path_like(code: &str) -> Option<&str> {
+    let mut p = code.trim();
+    while let Some((head, tail)) = p.rsplit_once(':') {
+        if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+            break;
+        }
+        p = head;
+    }
+    let chars_ok = p.chars().all(|c| c.is_alphanumeric() || "._-+@/\\".contains(c));
+    let has_ext = || {
+        p.rsplit_once('.').map_or(false, |(stem, ext)| {
+            !stem.is_empty()
+                && (1..=10).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                && ext.chars().any(|c| c.is_ascii_alphabetic())
+        })
+    };
+    let ok = !p.is_empty()
+        && p.len() <= 260
+        && chars_ok
+        && !p.starts_with(['/', '\\'])
+        && !p.contains("//")
+        && (p.contains(['/', '\\']) || has_ext());
+    ok.then_some(p)
+}
+
+/// `base` joined with a relative path, with `.` and `..` resolved (content URLs can't
+/// contain `..`). None if it would climb above the base's root.
+fn join_rel(base: &Path, rel: &str) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for c in base.join(rel.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR)).components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    return None;
+                }
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// Turn inline code naming an existing file into a link to it. Looked up relative to the
+/// document's folder, then to the root folder(s) containing it.
+fn link_code_paths<'a>(events: Vec<Event<'a>>, dir: &Path) -> Vec<Event<'a>> {
+    let dir_s = dir.to_string_lossy();
+    let mut bases = vec![dir.to_path_buf()];
+    if let Ok(roots) = ROOTS.read() {
+        for r in roots.iter().filter(|r| crate::platform::is_under(&dir_s, r)) {
+            if crate::platform::path_key(r) != crate::platform::path_key(&dir_s) {
+                bases.push(PathBuf::from(r));
+            }
+        }
+    }
+    let mut lookups = 0;
+    let mut in_link = 0usize;
+    let mut out = Vec::with_capacity(events.len());
+    for ev in events {
+        match &ev {
+            Event::Start(Tag::Link { .. }) => in_link += 1,
+            Event::End(TagEnd::Link) => in_link = in_link.saturating_sub(1),
+            Event::Code(t) if in_link == 0 && lookups < MAX_LOOKUPS => {
+                if let Some(rel) = path_like(t) {
+                    let found = bases.iter().filter_map(|b| join_rel(b, rel)).find(|p| {
+                        lookups += 1;
+                        lookups <= MAX_LOOKUPS && std::fs::metadata(p).map_or(false, |m| m.is_file())
+                    });
+                    if let Some(p) = found {
+                        let href = paths::path_to_url_path(&p.to_string_lossy());
+                        out.push(Event::Html(CowStr::from(format!("<a class=\"path\" href=\"{}\">", escape(&href)))));
+                        out.push(ev);
+                        out.push(Event::Html(CowStr::from("</a>")));
+                        continue;
+                    }
+                }
+            }
+            _ => {}
+        }
+        out.push(ev);
+    }
+    out
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+    #[test]
+    fn path_like_cases() {
+        assert_eq!(path_like("src/main.rs"), Some("src/main.rs"));
+        assert_eq!(path_like("ui/index.html:42:7"), Some("ui/index.html"));
+        assert_eq!(path_like("README.md"), Some("README.md"));
+        assert_eq!(path_like("../x/y"), Some("../x/y"));
+        for no in ["v1.2", "a b.md", "/etc/passwd", "https://x.org/a", "foo", "x.", ".", "~/a.md"] {
+            assert_eq!(path_like(no), None, "{no}");
+        }
+    }
+    #[test]
+    fn join() {
+        let b = Path::new("/a/b");
+        assert_eq!(join_rel(b, "../c/d.md"), Some(PathBuf::from("/a/c/d.md")));
+        assert_eq!(join_rel(b, "./x"), Some(PathBuf::from("/a/b/x")));
+        assert_eq!(join_rel(b, "../../../x"), None);
+    }
 }

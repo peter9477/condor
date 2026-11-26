@@ -10,6 +10,7 @@
 //! - `launch`: hand a URL to the system's default handler.
 //! - `pick_folder`: a native "choose folder" dialog.
 //! - `tune_ui_webview`: platform-specific webview builder settings.
+//! - `history_go` / `history_state`: back and forward in a webview's history.
 //!
 //! Add new OS-specific behaviour as a function here rather than with `cfg` at the call site.
 

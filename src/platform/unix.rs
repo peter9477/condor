@@ -99,6 +99,16 @@ pub fn tune_ui_webview<B>(b: B) -> B {
     b
 }
 
+/// Step a webview's history.
+pub fn history_go(wv: &wry::WebView, back: bool) {
+    let _ = wv.evaluate_script(if back { "history.back()" } else { "history.forward()" });
+}
+
+/// Not known here; the buttons simply stay enabled.
+pub fn history_state(_wv: &wry::WebView) -> Option<(bool, bool)> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

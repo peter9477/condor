@@ -77,6 +77,8 @@ enum Cmd {
     Dismiss,
     AutoReload { path: String, on: bool },
     Restart,
+    Back,
+    Forward,
     SetFilters { show_hidden: bool, hide_ignored: bool, viewable_only: bool, excludes: Vec<String> },
 }
 
@@ -226,6 +228,7 @@ impl App {
 
     fn rebuild_filters(&mut self) {
         self.filters = Arc::new(filters::Filters::from_state(&self.st));
+        render::set_roots(&self.st.roots);
     }
 
     fn init_message(&self) -> serde_json::Value {
@@ -316,6 +319,8 @@ impl App {
                 self.send_ui(&json!({"ev": "filter", "filters": self.filter_state()}));
             }
             Cmd::Reload => self.reload_keep_scroll(),
+            Cmd::Back => platform::history_go(&self.content, true),
+            Cmd::Forward => platform::history_go(&self.content, false),
             Cmd::Dismiss => self.set_banner(false),
             Cmd::AutoReload { path, on } => {
                 let changed = if on { self.st.auto_reload.insert(path.clone()) } else { self.st.auto_reload.remove(&path) };
@@ -410,7 +415,15 @@ impl App {
         self.send_ui(&json!({"ev": "banner", "show": true, "path": path, "deleted": deleted}));
     }
 
+    /// Tell the UI whether back/forward can go anywhere (unknown on some platforms).
+    fn send_history(&self) {
+        if let Some((back, fwd)) = platform::history_state(&self.content) {
+            self.send_ui(&json!({"ev": "history", "back": back, "forward": fwd}));
+        }
+    }
+
     fn on_page_loaded(&mut self, url: &str) {
+        self.send_history();
         let path = paths::url_to_path(url);
         if path.is_none() || path != self.current {
             return;
@@ -610,6 +623,7 @@ fn main() {
     let content = content_builder.build_as_child(&window).expect("create content webview");
 
 
+    render::set_roots(&st.roots);
     let mut app = App {
         env,
         current: None,

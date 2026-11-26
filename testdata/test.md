@@ -2,6 +2,10 @@
 
 [Back to README](../README.md) · [Jump to the table](#a-table)
 
+File paths in code style become links when the file exists: `page.html` (next to this file),
+`src/render.rs` (from the project root), `../ui/index.html:42` (line suffix ignored).
+Not linked: `missing.md`, `self.st.roots`, `v1.2`.
+
 ![pic](pic.svg)
 
 

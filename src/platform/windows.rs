@@ -104,6 +104,29 @@ pub fn tune_ui_webview(b: wry::WebViewBuilder<'_>) -> wry::WebViewBuilder<'_> {
     b.with_browser_accelerator_keys(false)
 }
 
+/// Step a webview's history (the same history Alt+Left and the mouse's back button use).
+pub fn history_go(wv: &wry::WebView, back: bool) {
+    use wry::WebViewExtWindows;
+    let w = wv.webview();
+    // SAFETY: plain COM calls on a live ICoreWebView2, made on the UI thread.
+    unsafe {
+        let _ = if back { w.GoBack() } else { w.GoForward() };
+    }
+}
+
+/// Whether there is somewhere to go (back, forward).
+pub fn history_state(wv: &wry::WebView) -> Option<(bool, bool)> {
+    use wry::WebViewExtWindows;
+    let w = wv.webview();
+    let (mut b, mut f) = (0i32, 0i32);
+    // SAFETY: as above; BOOL is a transparent i32.
+    unsafe {
+        w.CanGoBack(&mut b as *mut i32 as *mut _).ok()?;
+        w.CanGoForward(&mut f as *mut i32 as *mut _).ok()?;
+    }
+    Some((b != 0, f != 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
