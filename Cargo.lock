@@ -234,6 +234,7 @@ dependencies = [
  "serde_json",
  "syntect",
  "tao",
+ "webview2-com",
  "wry",
 ]
 

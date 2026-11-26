@@ -41,6 +41,9 @@ impl Watcher {
         let t = target.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(INTERVAL);
+            if Arc::strong_count(&t) == 1 {
+                break; // every Watcher handle is gone (its pane was closed)
+            }
             let (path, base) = {
                 let g = t.lock().unwrap();
                 match &g.path {

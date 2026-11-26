@@ -1,9 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! Condor: a lightweight folder-tree file viewer.
 //!
-//! One window holds two webviews:
-//!   * the UI webview (left, full window underneath): the folder tree, trusted, talks to us via IPC;
-//!   * the content webview (right): shows documents, untrusted, with no IPC at all.
+//! Each window ("shell") has one UI webview underneath everything, and one or more panes on
+//! top of it, each a content webview:
+//!   * the UI webview is our own trusted page: the folder tree (main window only), the bar
+//!     above each pane, banners and splitters. It is the only one with IPC.
+//!   * content webviews show documents: untrusted, no IPC at all.
+//!
+//! The main window has the tree and one or two panes (split side by side or stacked).
+//! Pop-out windows have a single pane and no tree.
 
 mod filters;
 mod paths;
@@ -18,51 +23,59 @@ mod watch;
 use serde::Deserialize;
 use serde_json::json;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
-use tao::window::{Window, WindowBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
+use tao::window::{Window, WindowBuilder, WindowId};
 use wry::http::{header, Response};
 use wry::{PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder};
 
+// Layout sizes, in the UI webview's CSS pixels.
+/// Splitter between the tree and the panes.
 const SPLITTER: f64 = 5.0;
-/// Height (UI CSS px) of the "file changed" banner above the content view.
+/// Bar above each pane: file name and the file's controls.
+const PANE_BAR: f64 = 32.0;
+/// "File changed" / "can't show" banner under a pane's bar.
 const BANNER: f64 = 34.0;
-/// Gap above the content view, drawn by the UI as a line so documents read as a
-/// separate pane (an HTML page can look just like the sidebar).
+/// Line above the document, so pages read as separate from the UI.
 const FRAME: f64 = 1.0;
+/// Divider between two panes.
+const DIVIDER: f64 = 5.0;
+
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 const SCROLL_POLL: Duration = Duration::from_millis(1500);
 
 const UI_HTML: &str = include_str!("../ui/index.html");
 
+type PaneId = u32;
+
 #[derive(Debug)]
 enum UserEvent {
-    /// Message from the UI webview.
-    Ipc(String),
-    /// A directory listing finished (JSON message for the UI).
+    /// Message from a window's UI webview.
+    Ipc(WindowId, String),
+    /// A directory listing finished (JSON message for the main UI).
     Listed(String),
-    /// The content webview is navigating to this URL.
-    ContentNav(String),
-    /// The content webview finished loading this URL.
-    PageLoaded(String),
-    /// Scroll position report: (url, y).
-    /// Polled view state of the content page: (url, scroll y, selection).
-    Scroll(String, f64, serde_json::Value),
-    /// Load this URL in the content webview (e.g. a target=_blank link to a local file).
-    LoadContent(String),
+    /// A pane is navigating to this URL.
+    ContentNav(PaneId, String),
+    /// A pane finished loading this URL.
+    PageLoaded(PaneId, String),
+    /// Polled view state of a pane: (url, scroll y, selection).
+    Scroll(PaneId, String, f64, serde_json::Value),
+    /// Load this URL in a pane (e.g. a target=_blank link to a local file).
+    LoadContent(PaneId, String),
     /// The file shown can't be previewed (binary or too large); offer to open it elsewhere.
-    NoPreview(String),
-    /// The open file changed on disk: (path, deleted).
-    FileChanged(String, bool),
-    /// Reload the content view, first recording this scroll position for the file.
-    ReloadAt(String, f64),
+    NoPreview(PaneId, String),
+    /// The file in a pane changed on disk: (path, deleted).
+    FileChanged(PaneId, String, bool),
+    /// Reload a pane, first recording this scroll position for its file.
+    ReloadAt(PaneId, String, f64),
+    /// A pane's document got keyboard focus.
+    Focus(PaneId),
     /// A new build of condor.exe has been installed where we were started from.
     UpdateAvailable,
-    /// Restart into the new build, first recording this scroll position (url, y).
-    RestartAt(String, f64),
 }
 
 #[derive(Deserialize, Debug)]
@@ -70,51 +83,89 @@ enum UserEvent {
 enum Cmd {
     Ready,
     List { path: String },
+    /// Open a file from the tree, in the main window's focused pane.
     Open { path: String },
     Expand { path: String, open: bool },
+    /// The UI's device pixel ratio, and (main window) the tree's width.
     Sidebar { width: f64, dpr: Option<f64> },
     AddRoot,
     RemoveRoot { path: String },
     MoveRoot { path: String, to: usize },
-    Reload,
-    Dismiss,
-    AutoReload { path: String, on: bool },
     Restart,
-    Back,
-    Forward,
-    /// Switch the open file between its rendered and source views.
-    ToggleSource,
-    /// Change the global settings (saved, and picked up by other windows).
     SetSettings { settings: state::Settings },
-    /// Open a file in another application (`with`: let the user choose which).
     OpenExternal { path: String, with: bool },
     SetFilters { show_hidden: bool, hide_ignored: bool, viewable_only: bool, excludes: Vec<String> },
+    AutoReload { path: String, on: bool },
+    // Pane commands: `pane` defaults to the window's focused pane.
+    Reload { pane: Option<PaneId> },
+    Dismiss { pane: Option<PaneId> },
+    Back { pane: Option<PaneId> },
+    Forward { pane: Option<PaneId> },
+    ToggleSource { pane: Option<PaneId> },
+    Focus { pane: PaneId },
+    /// Split the main window (or, if split, swap side-by-side and stacked).
+    Split { pane: Option<PaneId> },
+    ClosePane { pane: PaneId },
+    /// Open a file, or a pane's file, in a new window (a pane in a split moves there).
+    PopOut { pane: Option<PaneId>, path: Option<String> },
+    /// Open a file in the main window's other pane, splitting if needed.
+    OpenOther { path: String },
+    /// The first pane's share of a split.
+    PaneRatio { ratio: f64 },
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum Kind {
+    Main,
+    Popout,
+}
+
+/// A top-level window: its UI webview and its panes.
+struct Shell {
+    kind: Kind,
+    // Field order matters: the webview is dropped before the window that hosts it.
+    ui: WebView,
+    window: Window,
+    /// Device pixel ratio of the UI webview, as it reports it.
+    ui_dpr: Option<f64>,
+    panes: Vec<PaneId>,
+    focused: PaneId,
+}
+
+/// A document view.
+struct Pane {
+    shell: WindowId,
+    content: WebView,
+    watcher: watch::Watcher,
+    /// File shown, and the full URL (its query says rendered or source view).
+    current: Option<String>,
+    url: String,
+    /// A saved scroll position is still being applied; don't record positions meanwhile.
+    restoring: bool,
+    /// The banner showing under the pane's bar, if any (the message sent to the UI).
+    banner: Option<serde_json::Value>,
 }
 
 struct App {
     env: String,
     st: state::EnvState,
-    window: Window,
-    ui: WebView,
-    content: WebView,
     proxy: EventLoopProxy<UserEvent>,
+    ctx: WebContext,
+    main: WindowId,
+    shells: HashMap<WindowId, Shell>,
+    /// Pop-out windows in the order they were opened (saved in that order).
+    popout_order: Vec<WindowId>,
+    panes: HashMap<PaneId, Pane>,
+    next_pane: PaneId,
     save_at: Option<Instant>,
     next_poll: Instant,
-    /// File currently shown in the content view, and whether its saved scroll is still to be applied.
-    current: Option<String>,
-    /// Full URL in the content view (its query says rendered or source view).
-    current_url: String,
-    restoring: bool,
     last_saved: Option<state::EnvState>,
-    /// Device pixel ratio of the UI webview, as it reports it.
-    ui_dpr: Option<f64>,
-    watcher: watch::Watcher,
     filters: Arc<filters::Filters>,
-    /// The "file changed on disk" banner is showing.
-    banner: bool,
     /// The exe we were started from, and whether a newer build has replaced it.
     exe: Option<std::path::PathBuf>,
     update_ready: bool,
+    /// Restart once the panes have reported their scroll positions.
+    restart_at: Option<Instant>,
     /// Global settings, and the settings file's signature when last read or written.
     settings: state::Settings,
     settings_sig: watch::Sig,
@@ -177,9 +228,138 @@ fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<
     });
 }
 
+/// Build a top-level window, restoring its geometry if it is still on a connected monitor.
+fn build_window(target: &EventLoopWindowTarget<UserEvent>, geom: Option<state::WinGeom>, default: LogicalSize<f64>) -> Window {
+    let mut wb = WindowBuilder::new().with_title("Condor").with_inner_size(default);
+    if let Some(g) = geom {
+        let on_screen = target.available_monitors().any(|m| {
+            let (mp, ms) = (m.position(), m.size());
+            g.x + 50 < mp.x + ms.width as i32 && g.x + g.w as i32 > mp.x + 50 && g.y >= mp.y - 20 && g.y < mp.y + ms.height as i32 - 50
+        });
+        wb = wb.with_inner_size(PhysicalSize::new(g.w.max(300), g.h.max(200)));
+        if on_screen {
+            wb = wb.with_position(PhysicalPosition::new(g.x, g.y));
+        }
+        wb = wb.with_maximized(g.maximized);
+    }
+    wb.build(target).expect("create window")
+}
+
+/// The UI webview for a window: our own page, the only one with IPC.
+fn build_ui(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<UserEvent>, kind: Kind) -> WebView {
+    let p_ipc = proxy.clone();
+    let wid = window.id();
+    let ui_origin = format!("{}/", platform::scheme_origin(paths::UI_SCHEME));
+    let mode = if kind == Kind::Main { "main" } else { "popout" };
+    platform::tune_ui_webview(WebViewBuilder::new_with_web_context(ctx))
+        .with_url(format!("{}://localhost/?mode={mode}", paths::UI_SCHEME))
+        .with_custom_protocol(paths::UI_SCHEME.into(), |_id, _req| {
+            Response::builder()
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(Cow::Borrowed(UI_HTML.as_bytes()))
+                .unwrap()
+        })
+        .with_navigation_handler(move |url| {
+            if url.starts_with(&ui_origin) {
+                true
+            } else {
+                platform::open_external(&url);
+                false
+            }
+        })
+        .with_ipc_handler(move |req| {
+            let _ = p_ipc.send_event(UserEvent::Ipc(wid, req.into_body()));
+        })
+        .with_devtools(std::env::var_os("CONDOR_DEVTOOLS").is_some())
+        // Built first, so the panes sit on top of it.
+        .build_as_child(window)
+        .expect("create UI webview")
+}
+
+/// A content webview for pane `id`: untrusted documents, no IPC.
+fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<UserEvent>, id: PaneId, url: &str) -> (WebView, watch::Watcher) {
+    let p_watch = proxy.clone();
+    let watcher = watch::Watcher::start(move |path, deleted| {
+        let _ = p_watch.send_event(UserEvent::FileChanged(id, path, deleted));
+    });
+    let w_serve = watcher.clone();
+    let w_nav = watcher.clone();
+    let (p_nav, p_load, p_new, p_focus) = (proxy.clone(), proxy.clone(), proxy.clone(), proxy.clone());
+    let file_origin = paths::file_origin();
+    let fo2 = file_origin.clone();
+    let start = format!("{}://localhost{}", paths::FILE_SCHEME, url.strip_prefix(&file_origin).unwrap_or("/"));
+    let content = WebViewBuilder::new_with_web_context(ctx)
+        .with_url(start)
+        .with_asynchronous_custom_protocol(paths::FILE_SCHEME.into(), move |_id, req, responder| {
+            let uri = req.uri().clone();
+            let w = w_serve.clone();
+            std::thread::spawn(move || {
+                if let Some(p) = paths::url_path_to_path(uri.path()) {
+                    w.served(&p, watch::signature(&p));
+                }
+                responder.respond(render::serve(uri.path(), uri.query()));
+            });
+        })
+        .with_navigation_handler(move |url| {
+            if url.starts_with(&file_origin) {
+                w_nav.set(paths::url_to_path(&url));
+                let _ = p_nav.send_event(UserEvent::ContentNav(id, url));
+                true
+            } else if url.starts_with("about:") || url.starts_with("data:") || url.starts_with("blob:") {
+                true
+            } else {
+                platform::open_external(&url);
+                false
+            }
+        })
+        .with_new_window_req_handler(move |url, _features| {
+            if url.starts_with(&fo2) {
+                let _ = p_new.send_event(UserEvent::LoadContent(id, url));
+            } else {
+                platform::open_external(&url);
+            }
+            wry::NewWindowResponse::Deny
+        })
+        .with_initialization_script(include_str!("../ui/content.js"))
+        .with_on_page_load_handler(move |ev, url| {
+            if let PageLoadEvent::Finished = ev {
+                let _ = p_load.send_event(UserEvent::PageLoaded(id, url));
+            }
+        })
+        .with_devtools(std::env::var_os("CONDOR_DEVTOOLS").is_some())
+        .build_as_child(window)
+        .expect("create content webview");
+    platform::on_focus(&content, move || {
+        let _ = p_focus.send_event(UserEvent::Focus(id));
+    });
+    (content, watcher)
+}
+
+fn geometry_of(w: &Window, previous: Option<state::WinGeom>) -> Option<state::WinGeom> {
+    if w.is_minimized() {
+        return previous;
+    }
+    if w.is_maximized() {
+        // Keep the restored geometry; just record the flag.
+        return previous.map(|g| state::WinGeom { maximized: true, ..g });
+    }
+    let pos = w.outer_position().ok()?;
+    let size = w.inner_size();
+    Some(state::WinGeom { x: pos.x, y: pos.y, w: size.width, h: size.height, maximized: false })
+}
+
 impl App {
-    fn send_ui(&self, msg: &serde_json::Value) {
-        let _ = self.ui.evaluate_script(&format!("window.condor && condor.recv({msg})"));
+    // ----- plumbing -------------------------------------------------------------------
+
+    fn send_ui(&self, wid: WindowId, msg: &serde_json::Value) {
+        if let Some(sh) = self.shells.get(&wid) {
+            let _ = sh.ui.evaluate_script(&format!("window.condor && condor.recv({msg})"));
+        }
+    }
+
+    fn send_main(&self, msg: &serde_json::Value) {
+        self.send_ui(self.main, msg);
     }
 
     fn mark_dirty(&mut self) {
@@ -187,7 +367,7 @@ impl App {
     }
 
     fn save_now(&mut self) {
-        self.capture_geometry();
+        self.capture_layout();
         if self.last_saved.as_ref() != Some(&self.st) {
             if let Err(e) = state::save(&self.env, &self.st) {
                 log(&format!("save failed: {e}"));
@@ -197,48 +377,29 @@ impl App {
         self.save_at = None;
     }
 
-    fn capture_geometry(&mut self) {
-        let w = &self.window;
-        if w.is_minimized() {
-            return;
+    /// Record window geometry, the split and the pop-outs in the state.
+    fn capture_layout(&mut self) {
+        let Some(main) = self.shells.get(&self.main) else { return };
+        self.st.window = geometry_of(&main.window, self.st.window);
+        let files: Vec<Option<String>> = main.panes.iter().map(|p| self.panes.get(p).and_then(|p| p.current.clone())).collect();
+        if let Some(Some(f)) = files.first() {
+            self.st.open_file = Some(f.clone());
         }
-        let maximized = w.is_maximized();
-        if maximized {
-            // Keep the restored geometry; just record the flag.
-            if let Some(g) = &mut self.st.window {
-                g.maximized = true;
-            }
-            return;
+        self.st.split = files.len() > 1;
+        if let Some(f) = files.get(1) {
+            self.st.split_file = f.clone();
         }
-        if let Ok(pos) = w.outer_position() {
-            let size = w.inner_size();
-            self.st.window = Some(state::WinGeom { x: pos.x, y: pos.y, w: size.width, h: size.height, maximized });
-        }
-    }
-
-    fn layout(&self) {
-        // The sidebar width is in the UI webview's CSS pixels. Its device pixel ratio can
-        // differ from the window's scale factor (e.g. with Windows text scaling), so the UI
-        // reports it and we position the content view in physical pixels.
-        let size = self.window.inner_size();
-        let dpr = self.ui_dpr.unwrap_or_else(|| self.window.scale_factor());
-        let _ = self.ui.set_bounds(Rect {
-            position: PhysicalPosition::new(0, 0).into(),
-            size: PhysicalSize::new(size.width, size.height).into(),
-        });
-        let x = (((self.st.sidebar_width + SPLITTER) * dpr).round() as u32).min(size.width);
-        let top = if self.banner { BANNER } else { 0.0 } + FRAME;
-        let y = ((top * dpr).round() as u32).min(size.height);
-        let _ = self.content.set_bounds(Rect {
-            position: PhysicalPosition::new(x as i32, y as i32).into(),
-            size: PhysicalSize::new(size.width - x, size.height - y).into(),
-        });
-    }
-
-    fn open_file(&mut self, path: &str) {
-        debug(|| format!("open_file {path}"));
-        let url = paths::path_to_url(path);
-        let _ = self.content.load_url(&url);
+        let old = std::mem::take(&mut self.st.popouts);
+        self.st.popouts = self
+            .popout_order
+            .iter()
+            .enumerate()
+            .filter_map(|(i, wid)| {
+                let sh = self.shells.get(wid)?;
+                let file = sh.panes.first().and_then(|p| self.panes.get(p)).and_then(|p| p.current.clone());
+                Some(state::Popout { file, window: geometry_of(&sh.window, old.get(i).and_then(|o| o.window)) })
+            })
+            .collect();
     }
 
     fn filter_state(&self) -> serde_json::Value {
@@ -255,26 +416,233 @@ impl App {
         render::set_roots(&self.st.roots);
     }
 
-    fn init_message(&self) -> serde_json::Value {
+    /// URL for opening `path`, in the view (rendered or source) last chosen for it.
+    fn url_for(&self, path: &str) -> String {
+        let url = paths::path_to_url(path);
+        if self.st.source_view.contains(path) && render::has_source_view(path) {
+            format!("{url}?source")
+        } else {
+            url
+        }
+    }
+
+    fn pane_of(&self, wid: WindowId, pane: Option<PaneId>) -> Option<PaneId> {
+        let id = pane.or_else(|| self.shells.get(&wid).map(|s| s.focused))?;
+        self.panes.contains_key(&id).then_some(id)
+    }
+
+    // ----- windows and panes ----------------------------------------------------------
+
+    fn add_pane(&mut self, wid: WindowId, file: Option<&str>) -> PaneId {
+        let id = self.next_pane;
+        self.next_pane += 1;
+        let url = file.map(|f| self.url_for(f)).unwrap_or_else(|| format!("{}/", paths::file_origin()));
+        let window = &self.shells[&wid].window;
+        let (content, watcher) = build_content(&mut self.ctx, window, &self.proxy, id, &url);
+        self.panes.insert(
+            id,
+            Pane { shell: wid, content, watcher, current: None, url: String::new(), restoring: false, banner: None },
+        );
+        if let Some(sh) = self.shells.get_mut(&wid) {
+            sh.panes.push(id);
+        }
+        id
+    }
+
+    fn create_shell(&mut self, target: &EventLoopWindowTarget<UserEvent>, kind: Kind, geom: Option<state::WinGeom>) -> WindowId {
+        let default = if kind == Kind::Main { LogicalSize::new(1200.0, 800.0) } else { LogicalSize::new(900.0, 800.0) };
+        let window = build_window(target, geom, default);
+        let ui = build_ui(&mut self.ctx, &window, &self.proxy, kind);
+        let wid = window.id();
+        self.shells.insert(wid, Shell { kind, ui, window, ui_dpr: None, panes: Vec::new(), focused: 0 });
+        wid
+    }
+
+    /// A new pop-out window showing `file`.
+    fn pop_out(&mut self, target: &EventLoopWindowTarget<UserEvent>, file: Option<&str>, geom: Option<state::WinGeom>) {
+        let geom = geom.or_else(|| {
+            // Cascade from the main window.
+            let w = &self.shells.get(&self.main)?.window;
+            let pos = w.outer_position().ok()?;
+            let scale = w.scale_factor();
+            Some(state::WinGeom {
+                x: pos.x + (60.0 * scale) as i32,
+                y: pos.y + (60.0 * scale) as i32,
+                w: (900.0 * scale) as u32,
+                h: (800.0 * scale) as u32,
+                maximized: false,
+            })
+        });
+        let wid = self.create_shell(target, Kind::Popout, geom);
+        let id = self.add_pane(wid, file);
+        if let Some(sh) = self.shells.get_mut(&wid) {
+            sh.focused = id;
+        }
+        self.popout_order.push(wid);
+        self.layout(wid);
+        self.mark_dirty();
+    }
+
+    fn close_pane(&mut self, id: PaneId) {
+        let Some(pane) = self.panes.remove(&id) else { return };
+        pane.watcher.set(None);
+        let wid = pane.shell;
+        drop(pane); // destroys the webview
+        if let Some(sh) = self.shells.get_mut(&wid) {
+            sh.panes.retain(|p| *p != id);
+            if sh.focused == id {
+                sh.focused = sh.panes.first().copied().unwrap_or(0);
+            }
+        }
+        self.after_focus_change(wid);
+        self.layout(wid);
+        self.mark_dirty();
+    }
+
+    fn close_popout(&mut self, wid: WindowId) {
+        let Some(sh) = self.shells.remove(&wid) else { return };
+        for id in &sh.panes {
+            if let Some(p) = self.panes.remove(id) {
+                p.watcher.set(None);
+            }
+        }
+        self.popout_order.retain(|w| *w != wid);
+        drop(sh);
+        self.mark_dirty();
+    }
+
+    fn set_focus(&mut self, id: PaneId) {
+        let Some(wid) = self.panes.get(&id).map(|p| p.shell) else { return };
+        let Some(sh) = self.shells.get_mut(&wid) else { return };
+        if sh.focused != id {
+            sh.focused = id;
+            self.after_focus_change(wid);
+            self.layout(wid);
+        }
+    }
+
+    /// The window title and (main window) the tree selection follow the focused pane.
+    fn after_focus_change(&mut self, wid: WindowId) {
+        let Some(sh) = self.shells.get(&wid) else { return };
+        let file = self.panes.get(&sh.focused).and_then(|p| p.current.clone());
+        let env = if self.env == "default" { String::new() } else { format!(" ({})", self.env) };
+        let title = match &file {
+            Some(p) => format!("{} - Condor{env}", platform::file_name(p)),
+            None => format!("Condor{env}"),
+        };
+        sh.window.set_title(&title);
+        if sh.kind == Kind::Main {
+            self.send_main(&json!({"ev": "selected", "path": file}));
+        }
+    }
+
+    /// Position the UI and the panes of a window, and tell its UI where things are.
+    fn layout(&self, wid: WindowId) {
+        let Some(sh) = self.shells.get(&wid) else { return };
+        let size = sh.window.inner_size();
+        let dpr = sh.ui_dpr.unwrap_or_else(|| sh.window.scale_factor());
+        let _ = sh.ui.set_bounds(Rect {
+            position: PhysicalPosition::new(0, 0).into(),
+            size: PhysicalSize::new(size.width, size.height).into(),
+        });
+        let (ww, wh) = (size.width as f64 / dpr, size.height as f64 / dpr);
+        let x0 = if sh.kind == Kind::Main { self.st.sidebar_width + SPLITTER } else { 0.0 };
+        let area = (x0, 0.0, (ww - x0).max(0.0), wh);
+        let mut rects = Vec::new();
+        let mut divider = serde_json::Value::Null;
+        if sh.panes.len() >= 2 {
+            let r = self.st.split_ratio.clamp(0.1, 0.9);
+            if self.st.split_side_by_side {
+                let w1 = ((area.2 - DIVIDER) * r).round();
+                rects.push((area.0, area.1, w1, area.3));
+                rects.push((area.0 + w1 + DIVIDER, area.1, area.2 - w1 - DIVIDER, area.3));
+                divider = json!({"x": area.0 + w1, "y": area.1, "w": DIVIDER, "h": area.3});
+            } else {
+                let h1 = ((area.3 - DIVIDER) * r).round();
+                rects.push((area.0, area.1, area.2, h1));
+                rects.push((area.0, area.1 + h1 + DIVIDER, area.2, area.3 - h1 - DIVIDER));
+                divider = json!({"x": area.0, "y": area.1 + h1, "w": area.2, "h": DIVIDER});
+            }
+        } else {
+            rects.push(area);
+        }
+        let phys = |v: f64| (v * dpr).round().max(0.0);
+        let mut panes = Vec::new();
+        for (id, r) in sh.panes.iter().zip(rects) {
+            let Some(p) = self.panes.get(id) else { continue };
+            let top = PANE_BAR + if p.banner.is_some() { BANNER } else { 0.0 } + FRAME;
+            let (x, y) = (phys(r.0), phys(r.1 + top));
+            let (w, h) = (phys(r.0 + r.2) - x, (phys(r.1 + r.3) - y).max(0.0));
+            let _ = p.content.set_bounds(Rect {
+                position: PhysicalPosition::new(x as i32, y as i32).into(),
+                size: PhysicalSize::new(w.max(0.0) as u32, h as u32).into(),
+            });
+            panes.push(json!({"id": id, "x": r.0, "y": r.1, "w": r.2, "h": r.3, "focused": *id == sh.focused}));
+        }
+        self.send_ui(
+            wid,
+            &json!({"ev": "layout", "panes": panes, "divider": divider, "area": {"x": area.0, "y": area.1, "w": area.2, "h": area.3},
+                    "sideBySide": self.st.split_side_by_side, "split": sh.panes.len() >= 2}),
+        );
+    }
+
+    /// Tell a pane's UI about its file and the file's settings.
+    fn send_pane_state(&self, id: PaneId) {
+        let Some(p) = self.panes.get(&id) else { return };
+        let can = p.current.as_deref().map_or(false, render::has_source_view);
+        let auto = p.current.as_ref().map_or(false, |f| self.st.auto_reload.contains(f));
+        self.send_ui(
+            p.shell,
+            &json!({"ev": "pane", "id": id, "file": p.current, "canSource": can,
+                    "source": can && render::is_source_url(&p.url), "auto": auto}),
+        );
+        if let Some((back, fwd)) = platform::history_state(&p.content) {
+            self.send_ui(p.shell, &json!({"ev": "history", "id": id, "back": back, "forward": fwd}));
+        }
+    }
+
+    fn init_message(&self, wid: WindowId) -> serde_json::Value {
+        let kind = self.shells.get(&wid).map_or(Kind::Main, |s| s.kind);
+        let selected = self.shells.get(&wid).and_then(|s| self.panes.get(&s.focused)).and_then(|p| p.current.clone());
         json!({
             "ev": "init",
+            "mode": if kind == Kind::Main { "main" } else { "popout" },
             "env": self.env,
             "update": self.update_ready,
             "roots": self.st.roots,
             "openWith": platform::CAN_OPEN_WITH,
             "settings": self.settings,
             "expanded": self.st.expanded,
-            "selected": self.st.open_file,
+            "selected": selected.or_else(|| self.st.open_file.clone()),
             "sidebar": self.st.sidebar_width,
             "filters": self.filter_state(),
         })
     }
 
-    fn handle_cmd(&mut self, cmd: Cmd) {
+    // ----- commands from the UI -------------------------------------------------------
+
+    fn handle_cmd(&mut self, target: &EventLoopWindowTarget<UserEvent>, wid: WindowId, cmd: Cmd) {
+        let is_main = wid == self.main;
         match cmd {
-            Cmd::Ready => self.send_ui(&self.init_message()),
+            Cmd::Ready => {
+                self.send_ui(wid, &self.init_message(wid));
+                self.layout(wid);
+                let panes = self.shells.get(&wid).map(|s| s.panes.clone()).unwrap_or_default();
+                for id in panes {
+                    self.send_pane_state(id);
+                    if let Some(b) = self.panes.get(&id).and_then(|p| p.banner.clone()) {
+                        self.send_ui(wid, &b);
+                    }
+                }
+            }
             Cmd::List { path } => list_dir(path, self.filters.clone(), self.proxy.clone()),
-            Cmd::Open { path } => self.open_file(&path),
+            Cmd::Open { path } => {
+                let focused = self.shells.get(&self.main).map(|s| s.focused);
+                if let Some(p) = focused.and_then(|f| self.panes.get(&f)) {
+                    debug(|| format!("open {path}"));
+                    let _ = p.content.load_url(&self.url_for(&path));
+                }
+            }
             Cmd::Expand { path, open } => {
                 let changed = if open { self.st.expanded.insert(path) } else { self.st.expanded.remove(&path) };
                 if changed {
@@ -282,17 +650,19 @@ impl App {
                 }
             }
             Cmd::Sidebar { width, dpr } => {
-                if let Some(d) = dpr.filter(|d| d.is_finite() && *d > 0.2 && *d < 10.0) {
-                    self.ui_dpr = Some(d);
+                if let Some(sh) = self.shells.get_mut(&wid) {
+                    if let Some(d) = dpr.filter(|d| d.is_finite() && *d > 0.2 && *d < 10.0) {
+                        sh.ui_dpr = Some(d);
+                    }
                 }
-                if width.is_finite() {
+                if is_main && width.is_finite() {
                     let w = width.clamp(120.0, 2000.0);
                     if w != self.st.sidebar_width {
                         self.st.sidebar_width = w;
                         self.mark_dirty();
                     }
                 }
-                self.layout();
+                self.layout(wid);
             }
             Cmd::AddRoot => {
                 // Blocks this thread while the dialog is open, like any modal dialog.
@@ -305,7 +675,7 @@ impl App {
                 self.rebuild_filters();
                 // Forget saved expansion under that root, so re-adding starts fresh.
                 self.st.expanded.retain(|e| !platform::is_under(e, &path));
-                self.send_ui(&json!({"ev": "roots", "roots": self.st.roots}));
+                self.send_main(&json!({"ev": "roots", "roots": self.st.roots}));
                 self.mark_dirty();
             }
             Cmd::MoveRoot { path, to } => {
@@ -313,26 +683,14 @@ impl App {
                     let r = self.st.roots.remove(i);
                     let to = to.min(self.st.roots.len());
                     self.st.roots.insert(to, r);
-                    self.send_ui(&json!({"ev": "roots", "roots": self.st.roots}));
+                    self.send_main(&json!({"ev": "roots", "roots": self.st.roots}));
                     self.mark_dirty();
                 }
             }
             Cmd::Restart => {
-                // Record the scroll position first; the reply arrives as RestartAt.
-                let proxy = self.proxy.clone();
-                let ok = self.content.evaluate_script_with_callback("[location.href, window.scrollY]", move |res| {
-                    let (u, y) = match serde_json::from_str::<serde_json::Value>(&res) {
-                        Ok(serde_json::Value::Array(v)) => (
-                            v.first().and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                            v.get(1).and_then(|x| x.as_f64()).unwrap_or(f64::NAN),
-                        ),
-                        _ => (String::new(), f64::NAN),
-                    };
-                    let _ = proxy.send_event(UserEvent::RestartAt(u, y));
-                });
-                if ok.is_err() {
-                    let _ = self.proxy.send_event(UserEvent::RestartAt(String::new(), f64::NAN));
-                }
+                // Collect scroll positions first; the replies arrive as Scroll events.
+                self.poll_scroll();
+                self.restart_at = Some(Instant::now() + Duration::from_millis(400));
             }
             Cmd::SetFilters { show_hidden, hide_ignored, viewable_only, excludes } => {
                 self.st.show_hidden = show_hidden;
@@ -342,9 +700,8 @@ impl App {
                 gitfilter::clear_cache();
                 self.rebuild_filters();
                 self.mark_dirty();
-                self.send_ui(&json!({"ev": "filter", "filters": self.filter_state()}));
+                self.send_main(&json!({"ev": "filter", "filters": self.filter_state()}));
             }
-            Cmd::Reload => self.reload_keep_scroll(),
             Cmd::OpenExternal { path, with } => {
                 if !std::path::Path::new(&path).is_file() {
                     return;
@@ -368,28 +725,110 @@ impl App {
                 self.settings_sig = watch::signature(&state::settings_file().to_string_lossy());
                 self.apply_settings(s);
             }
-            Cmd::ToggleSource => {
-                if let Some(p) = self.current.clone().filter(|p| render::has_source_view(p)) {
-                    let url = paths::path_to_url(&p);
-                    let url = if render::is_source_url(&self.current_url) { url } else { format!("{url}?source") };
-                    let _ = self.content.load_url(&url);
-                }
-            }
-            Cmd::Back => {
-                debug(|| "cmd back".into());
-                platform::history_go(&self.content, true)
-            }
-            Cmd::Forward => platform::history_go(&self.content, false),
-            Cmd::Dismiss => self.set_banner(false),
             Cmd::AutoReload { path, on } => {
                 let changed = if on { self.st.auto_reload.insert(path.clone()) } else { self.st.auto_reload.remove(&path) };
                 if changed {
                     self.mark_dirty();
                 }
-                if on && self.banner && self.current.as_deref() == Some(path.as_str()) {
-                    self.reload_keep_scroll();
+                let showing: Vec<PaneId> =
+                    self.panes.iter().filter(|(_, p)| p.current.as_deref() == Some(path.as_str())).map(|(id, _)| *id).collect();
+                for id in showing {
+                    let changed_banner = self.panes[&id].banner.as_ref().map_or(false, |b| b["kind"] == "changed");
+                    if on && changed_banner {
+                        self.reload_keep_scroll(id);
+                    }
+                    self.send_pane_state(id);
                 }
-                self.send_ui(&json!({"ev": "auto", "path": path, "on": on}));
+            }
+            Cmd::Reload { pane } => {
+                if let Some(id) = self.pane_of(wid, pane) {
+                    self.reload_keep_scroll(id);
+                }
+            }
+            Cmd::Dismiss { pane } => {
+                if let Some(id) = self.pane_of(wid, pane) {
+                    self.set_banner(id, None);
+                }
+            }
+            Cmd::Back { pane } => {
+                if let Some(id) = self.pane_of(wid, pane) {
+                    debug(|| format!("back {id}"));
+                    platform::history_go(&self.panes[&id].content, true);
+                }
+            }
+            Cmd::Forward { pane } => {
+                if let Some(id) = self.pane_of(wid, pane) {
+                    platform::history_go(&self.panes[&id].content, false);
+                }
+            }
+            Cmd::ToggleSource { pane } => {
+                let Some(id) = self.pane_of(wid, pane) else { return };
+                let p = &self.panes[&id];
+                let Some(file) = p.current.clone().filter(|f| render::has_source_view(f)) else { return };
+                let to_source = !render::is_source_url(&p.url);
+                if to_source {
+                    self.st.source_view.insert(file.clone());
+                } else {
+                    self.st.source_view.remove(&file);
+                }
+                self.mark_dirty();
+                let _ = self.panes[&id].content.load_url(&self.url_for(&file));
+            }
+            Cmd::Focus { pane } => self.set_focus(pane),
+            Cmd::Split { pane } => {
+                if !is_main {
+                    return;
+                }
+                let n = self.shells[&self.main].panes.len();
+                if n >= 2 {
+                    self.st.split_side_by_side = !self.st.split_side_by_side;
+                } else {
+                    let src = self.pane_of(wid, pane);
+                    let file = src.and_then(|p| self.panes[&p].current.clone());
+                    let id = self.add_pane(self.main, file.as_deref());
+                    self.set_focus(id);
+                }
+                self.layout(self.main);
+                self.mark_dirty();
+            }
+            Cmd::ClosePane { pane } => {
+                let in_split = self.panes.get(&pane).map_or(false, |p| p.shell == self.main) && self.shells[&self.main].panes.len() > 1;
+                if in_split {
+                    self.close_pane(pane);
+                }
+            }
+            Cmd::PopOut { pane, path } => {
+                let file = path.or_else(|| self.pane_of(wid, pane).and_then(|p| self.panes[&p].current.clone()));
+                self.pop_out(target, file.as_deref(), None);
+                // A pane in a split moves to the new window.
+                if let Some(id) = pane {
+                    if is_main && self.shells[&self.main].panes.len() > 1 {
+                        self.close_pane(id);
+                    }
+                }
+            }
+            Cmd::OpenOther { path } => {
+                let main = &self.shells[&self.main];
+                let other = main.panes.iter().copied().find(|p| *p != main.focused);
+                match other {
+                    Some(id) => {
+                        let _ = self.panes[&id].content.load_url(&self.url_for(&path));
+                    }
+                    None => {
+                        let focused = main.focused;
+                        self.add_pane(self.main, Some(&path));
+                        self.layout(self.main);
+                        self.set_focus(focused);
+                        self.mark_dirty();
+                    }
+                }
+            }
+            Cmd::PaneRatio { ratio } => {
+                if ratio.is_finite() {
+                    self.st.split_ratio = ratio.clamp(0.1, 0.9);
+                    self.layout(self.main);
+                    self.mark_dirty();
+                }
             }
         }
     }
@@ -400,136 +839,129 @@ impl App {
             self.st.roots.push(p.clone());
             self.st.expanded.insert(p);
             self.rebuild_filters();
-            self.send_ui(&json!({"ev": "roots", "roots": self.st.roots, "expanded": self.st.expanded}));
+            self.send_main(&json!({"ev": "roots", "roots": self.st.roots, "expanded": self.st.expanded}));
             self.mark_dirty();
         }
     }
 
-    fn on_content_nav(&mut self, url: &str) {
-        debug(|| format!("nav {url}"));
+    // ----- pane events ----------------------------------------------------------------
+
+    fn on_content_nav(&mut self, id: PaneId, url: &str) {
+        debug(|| format!("nav {id} {url}"));
         let path = paths::url_to_path(url);
-        if path != self.current {
-            self.current = path.clone();
-            self.set_banner(false);
-            self.restoring = self.current.as_ref().map_or(false, |p| self.st.scroll.contains_key(p));
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        let moved = path != p.current;
+        p.current = path.clone();
+        p.url = url.to_string();
+        if moved {
+            p.restoring = path.as_ref().map_or(false, |f| self.st.scroll.contains_key(f));
+            self.set_banner(id, None);
         }
-        let title = match &path {
-            Some(p) => format!("{} - Condor", platform::file_name(p)),
-            None => "Condor".to_string(),
-        };
-        self.window.set_title(&title);
-        if path.is_some() && self.st.open_file != path {
-            self.st.open_file = path.clone();
-            self.mark_dirty();
+        let wid = self.panes[&id].shell;
+        if self.shells.get(&wid).map_or(false, |s| s.focused == id) {
+            self.after_focus_change(wid);
         }
-        let auto = path.as_ref().map_or(false, |p| self.st.auto_reload.contains(p));
-        self.send_ui(&json!({"ev": "selected", "path": path, "auto": auto}));
-        self.current_url = url.to_string();
-        let can = path.as_deref().map_or(false, render::has_source_view);
-        self.send_ui(&json!({"ev": "view", "can": can, "source": can && render::is_source_url(url)}));
+        self.send_pane_state(id);
+        self.mark_dirty();
     }
 
-    fn on_no_preview(&mut self, path: &str) {
-        if self.current.as_deref() != Some(path) || self.banner {
+    fn on_no_preview(&mut self, id: PaneId, path: &str) {
+        let Some(p) = self.panes.get(&id) else { return };
+        if p.current.as_deref() != Some(path) || p.banner.is_some() {
             return; // moved on, or a change banner is already showing
         }
-        self.set_banner(true);
-        self.send_ui(&json!({"ev": "banner", "show": true, "kind": "open", "path": path,
-            "openWith": platform::CAN_OPEN_WITH}));
+        let msg = json!({"ev": "banner", "pane": id, "show": true, "kind": "open", "path": path, "openWith": platform::CAN_OPEN_WITH});
+        self.set_banner(id, Some(msg));
     }
 
-    fn set_banner(&mut self, on: bool) {
-        if self.banner != on {
-            self.banner = on;
-            self.layout();
-            if !on {
-                self.send_ui(&json!({"ev": "banner", "show": false}));
-            }
+    fn set_banner(&mut self, id: PaneId, msg: Option<serde_json::Value>) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        if p.banner.is_none() && msg.is_none() {
+            return;
         }
+        p.banner = msg.clone();
+        let wid = p.shell;
+        self.send_ui(wid, &msg.unwrap_or_else(|| json!({"ev": "banner", "pane": id, "show": false})));
+        self.layout(wid);
     }
 
-    /// Reload the content view, keeping the reader's scroll position.
-    fn reload_keep_scroll(&mut self) {
-        self.set_banner(false);
-        self.watcher.reset();
+    /// Reload a pane, keeping the reader's scroll position.
+    fn reload_keep_scroll(&mut self, id: PaneId) {
+        self.set_banner(id, None);
+        let Some(p) = self.panes.get(&id) else { return };
+        p.watcher.reset();
         let proxy = self.proxy.clone();
         let fallback = self.proxy.clone();
-        let r = self.content.evaluate_script_with_callback("[location.href, window.scrollY]", move |res| {
+        let r = p.content.evaluate_script_with_callback("[location.href, window.scrollY]", move |res| {
             let v: serde_json::Value = serde_json::from_str(&res).unwrap_or_default();
             let url = v.get(0).and_then(|x| x.as_str()).unwrap_or("").to_string();
             let y = v.get(1).and_then(|x| x.as_f64()).unwrap_or(-1.0);
-            let _ = proxy.send_event(UserEvent::ReloadAt(url, y));
+            let _ = proxy.send_event(UserEvent::ReloadAt(id, url, y));
         });
         if r.is_err() {
-            let _ = fallback.send_event(UserEvent::ReloadAt(String::new(), -1.0));
+            let _ = fallback.send_event(UserEvent::ReloadAt(id, String::new(), -1.0));
         }
     }
 
-    fn on_reload_at(&mut self, url: &str, y: f64) {
-        if let (Some(p), true) = (paths::url_to_path(url), y >= 0.0 && y.is_finite()) {
-            if Some(&p) == self.current.as_ref() {
-                self.st.set_scroll(&p, y.round());
-                self.restoring = true;
+    fn on_reload_at(&mut self, id: PaneId, url: &str, y: f64) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        if let (Some(f), true) = (paths::url_to_path(url), y >= 0.0 && y.is_finite()) {
+            if Some(&f) == p.current.as_ref() && !render::is_source_url(url) {
+                p.restoring = true;
+                self.st.set_scroll(&f, y.round());
             }
         }
-        let _ = self.content.reload();
+        let _ = self.panes[&id].content.reload();
     }
 
-    fn on_file_changed(&mut self, path: &str, deleted: bool) {
-        if Some(path) != self.current.as_deref() {
+    fn on_file_changed(&mut self, id: PaneId, path: &str, deleted: bool) {
+        if self.panes.get(&id).and_then(|p| p.current.as_deref()) != Some(path) {
             return;
         }
         if !deleted && self.st.auto_reload.contains(path) {
-            self.reload_keep_scroll();
+            self.reload_keep_scroll(id);
             return;
         }
-        self.set_banner(true);
-        self.send_ui(&json!({"ev": "banner", "show": true, "path": path, "deleted": deleted}));
+        let msg = json!({"ev": "banner", "pane": id, "show": true, "kind": "changed", "path": path, "deleted": deleted});
+        self.set_banner(id, Some(msg));
     }
 
-    /// Tell the UI whether back/forward can go anywhere (unknown on some platforms).
-    fn send_history(&self) {
-        if let Some((back, fwd)) = platform::history_state(&self.content) {
-            debug(|| format!("history back={back} fwd={fwd}"));
-            self.send_ui(&json!({"ev": "history", "back": back, "forward": fwd}));
-        }
-    }
-
-    fn on_page_loaded(&mut self, url: &str) {
-        debug(|| format!("loaded {url}"));
-        self.send_history();
-        if let Some(p) = paths::url_to_path(url) {
+    fn on_page_loaded(&mut self, id: PaneId, url: &str) {
+        debug(|| format!("loaded {id} {url}"));
+        self.send_pane_state(id);
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        let path = paths::url_to_path(url);
+        if let Some(f) = path.clone() {
             let proxy = self.proxy.clone();
             std::thread::spawn(move || {
-                if !render::previewable(&p) {
-                    let _ = proxy.send_event(UserEvent::NoPreview(p));
+                if !render::previewable(&f) {
+                    let _ = proxy.send_event(UserEvent::NoPreview(id, f));
                 }
             });
         }
-        let path = paths::url_to_path(url);
-        if path.is_none() || path != self.current {
+        if path.is_none() || path != p.current {
             return;
         }
-        let p = path.unwrap();
+        let f = path.unwrap();
         // ui/content.js restores from this session's memory if it has one, else from the
         // saved state. Pages it doesn't run in (e.g. PDFs) get a plain scroll.
         let saved = if render::is_source_url(url) {
             json!({"y": 0})
         } else {
-            json!({"y": self.st.scroll.get(&p).copied().unwrap_or(0.0), "sel": self.st.selection.get(&p)})
+            json!({"y": self.st.scroll.get(&f).copied().unwrap_or(0.0), "sel": self.st.selection.get(&f)})
         };
         let js = format!(
             "(function(st){{if(window.__condor){{window.__condor.restore(st);return}}\
              var n=0;function f(){{window.scrollTo(0,st.y);\
              if(Math.abs(window.scrollY-st.y)>2&&n++<30)setTimeout(f,100)}}if(st.y>0)f()}})({saved})"
         );
-        let _ = self.content.evaluate_script(&js);
-        self.restoring = false;
+        let _ = p.content.evaluate_script(&js);
+        p.restoring = false;
         // Give the restore a moment before polling, so we don't record a pre-restore 0.
         self.next_poll = Instant::now() + Duration::from_millis(3500);
     }
 
-/// Pick up settings changed by another window.
+    /// Pick up settings changed by another window.
     fn check_settings(&mut self) {
         let sig = watch::signature(&state::settings_file().to_string_lossy());
         if sig != self.settings_sig {
@@ -545,38 +977,44 @@ impl App {
         let old = std::mem::replace(&mut self.settings, s);
         if old.viewable_exts != self.settings.viewable_exts {
             self.rebuild_filters();
-            self.send_ui(&json!({"ev": "filter", "filters": self.filter_state()}));
+            self.send_main(&json!({"ev": "filter", "filters": self.filter_state()}));
         }
         if old.doc_width != self.settings.doc_width {
             render::set_width(&self.settings.doc_width);
-            self.reload_keep_scroll();
+            let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+            for id in ids {
+                self.reload_keep_scroll(id);
+            }
         }
-        self.send_ui(&json!({"ev": "settings", "settings": self.settings}));
+        let wids: Vec<WindowId> = self.shells.keys().copied().collect();
+        for w in wids {
+            self.send_ui(w, &json!({"ev": "settings", "settings": self.settings}));
+        }
     }
 
     fn poll_scroll(&mut self) {
         self.next_poll = Instant::now() + SCROLL_POLL;
-        if self.restoring || self.current.is_none() {
-            return;
-        }
-        let proxy = self.proxy.clone();
-        let _ = self.content.evaluate_script_with_callback(
-            "[location.href, window.scrollY, window.__condor ? window.__condor.state().sel : null]",
-            move |res| {
-                if let Ok(serde_json::Value::Array(v)) = serde_json::from_str::<serde_json::Value>(&res) {
-                    if let (Some(u), Some(y)) = (v.first().and_then(|x| x.as_str()), v.get(1).and_then(|x| x.as_f64())) {
-                        let sel = v.get(2).cloned().unwrap_or_default();
-                        let _ = proxy.send_event(UserEvent::Scroll(u.to_string(), y, sel));
+        for (id, p) in &self.panes {
+            if p.restoring || p.current.is_none() {
+                continue;
+            }
+            let (proxy, id) = (self.proxy.clone(), *id);
+            let _ = p.content.evaluate_script_with_callback(
+                "[location.href, window.scrollY, window.__condor ? window.__condor.state().sel : null]",
+                move |res| {
+                    if let Ok(serde_json::Value::Array(v)) = serde_json::from_str::<serde_json::Value>(&res) {
+                        if let (Some(u), Some(y)) = (v.first().and_then(|x| x.as_str()), v.get(1).and_then(|x| x.as_f64())) {
+                            let sel = v.get(2).cloned().unwrap_or_default();
+                            let _ = proxy.send_event(UserEvent::Scroll(id, u.to_string(), y, sel));
+                        }
                     }
-                }
-            },
-        );
+                },
+            );
+        }
     }
 
-    /// Save everything, start the new build with the same environment, and return true if
-    /// it started (the caller then exits).
-    fn restart(&mut self, url: &str, y: f64) -> bool {
-        self.on_scroll(url, y);
+    /// Save everything and start the new build with the same environment; true if it started.
+    fn restart(&mut self) -> bool {
         self.save_now();
         let Some(exe) = &self.exe else { return false };
         match std::process::Command::new(exe).args(["--env", &self.env]).spawn() {
@@ -588,32 +1026,36 @@ impl App {
         }
     }
 
-    fn on_selection(&mut self, url: &str, sel: serde_json::Value) {
-        let Some(p) = paths::url_to_path(url).filter(|_| !render::is_source_url(url)) else { return };
-        if Some(&p) != self.current.as_ref() || self.restoring {
-            return;
-        }
-        let changed = if sel.is_null() { self.st.selection.remove(&p).is_some() } else {
-            self.st.selection.get(&p) != Some(&sel) && { self.st.selection.insert(p.clone(), sel); true }
-        };
-        if changed {
-            if !self.st.scroll.contains_key(&p) {
-                self.st.set_scroll(&p, 0.0); // keeps the file in the capped recent list
-            }
-            self.mark_dirty();
-        }
+    /// The file a pane's polled URL refers to, if it is still the pane's current rendered view.
+    fn polled_file(&self, id: PaneId, url: &str) -> Option<String> {
+        let p = self.panes.get(&id)?;
+        // Saved positions are for the rendered view (the source view's last only a session).
+        let f = paths::url_to_path(url).filter(|_| !render::is_source_url(url))?;
+        (Some(&f) == p.current.as_ref() && !p.restoring).then_some(f)
     }
 
-    fn on_scroll(&mut self, url: &str, y: f64) {
-        // Saved positions are for the rendered view (the source view's last only a session).
-        let Some(p) = paths::url_to_path(url).filter(|_| !render::is_source_url(url)) else { return };
-        if Some(&p) != self.current.as_ref() || self.restoring || !y.is_finite() {
-            return;
+    fn on_scroll(&mut self, id: PaneId, url: &str, y: f64, sel: serde_json::Value) {
+        let Some(f) = self.polled_file(id, url) else { return };
+        if y.is_finite() {
+            let y = y.max(0.0).round();
+            let old = self.st.scroll.get(&f).copied();
+            if old != Some(y) && !(old.is_none() && y == 0.0) {
+                self.st.set_scroll(&f, y);
+                self.mark_dirty();
+            }
         }
-        let y = y.max(0.0).round();
-        let old = self.st.scroll.get(&p).copied();
-        if old != Some(y) && !(old.is_none() && y == 0.0) {
-            self.st.set_scroll(&p, y);
+        let changed = if sel.is_null() {
+            self.st.selection.remove(&f).is_some()
+        } else if self.st.selection.get(&f) != Some(&sel) {
+            self.st.selection.insert(f.clone(), sel);
+            true
+        } else {
+            false
+        };
+        if changed {
+            if !self.st.scroll.contains_key(&f) {
+                self.st.set_scroll(&f, 0.0); // keeps the file in the capped recent list
+            }
             self.mark_dirty();
         }
     }
@@ -652,132 +1094,47 @@ fn main() {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let mut wb = WindowBuilder::new().with_title("Condor").with_inner_size(LogicalSize::new(1200.0, 800.0));
-    if let Some(g) = st.window {
-        // Only restore the position if it is still on a connected monitor.
-        let on_screen = event_loop.available_monitors().any(|m| {
-            let (mp, ms) = (m.position(), m.size());
-            g.x + 50 < mp.x + ms.width as i32 && g.x + g.w as i32 > mp.x + 50 && g.y >= mp.y - 20 && g.y < mp.y + ms.height as i32 - 50
-        });
-        wb = wb.with_inner_size(PhysicalSize::new(g.w.max(300), g.h.max(200)));
-        if on_screen {
-            wb = wb.with_position(PhysicalPosition::new(g.x, g.y));
-        }
-        wb = wb.with_maximized(g.maximized);
-    }
-    let window = wb.build(&event_loop).expect("create window");
-
-    let mut ctx = WebContext::new(Some(state::local_data_dir().join(platform::WEBVIEW_DATA)));
-
-    // UI webview: our own trusted page, the only one with IPC.
-    let p_ipc = proxy.clone();
-    let ui_origin = format!("{}/", platform::scheme_origin(paths::UI_SCHEME));
-    let ui_builder = platform::tune_ui_webview(WebViewBuilder::new_with_web_context(&mut ctx))
-        .with_url(format!("{}://localhost/", paths::UI_SCHEME))
-        .with_custom_protocol(paths::UI_SCHEME.into(), |_id, _req| {
-            Response::builder()
-                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-                .header(header::CACHE_CONTROL, "no-store")
-                .body(Cow::Borrowed(UI_HTML.as_bytes()))
-                .unwrap()
-        })
-        .with_navigation_handler(move |url| {
-            if url.starts_with(&ui_origin) {
-                true
-            } else {
-                platform::open_external(&url);
-                false
-            }
-        })
-        .with_ipc_handler(move |req| {
-            let _ = p_ipc.send_event(UserEvent::Ipc(req.into_body()));
-        })
-        .with_devtools(std::env::var_os("CONDOR_DEVTOOLS").is_some());
-    // Built first so the content view sits on top of it.
-    let ui = ui_builder.build_as_child(&window).expect("create UI webview");
-
-
-    // Content webview: untrusted documents, no IPC.
-    let p_watch = proxy.clone();
-    let watcher = watch::Watcher::start(move |path, deleted| {
-        let _ = p_watch.send_event(UserEvent::FileChanged(path, deleted));
-    });
-    let w_serve = watcher.clone();
-    let w_nav = watcher.clone();
-    let p_nav = proxy.clone();
-    let p_load = proxy.clone();
-    let p_new = proxy.clone();
-    let file_origin = paths::file_origin();
-    let fo2 = file_origin.clone();
-    let initial = st.open_file.as_deref().map(paths::path_to_url).unwrap_or_else(|| format!("{file_origin}/"));
-    let content_builder = WebViewBuilder::new_with_web_context(&mut ctx)
-        .with_url(format!("{}://localhost{}", paths::FILE_SCHEME, initial.strip_prefix(&file_origin).unwrap_or("/")))
-        .with_asynchronous_custom_protocol(paths::FILE_SCHEME.into(), move |_id, req, responder| {
-            let uri = req.uri().clone();
-            let w = w_serve.clone();
-            std::thread::spawn(move || {
-                if let Some(p) = paths::url_path_to_path(uri.path()) {
-                    w.served(&p, watch::signature(&p));
-                }
-                responder.respond(render::serve(uri.path(), uri.query()));
-            });
-        })
-        .with_navigation_handler(move |url| {
-            if url.starts_with(&file_origin) {
-                w_nav.set(paths::url_to_path(&url));
-                let _ = p_nav.send_event(UserEvent::ContentNav(url));
-                true
-            } else if url.starts_with("about:") || url.starts_with("data:") || url.starts_with("blob:") {
-                true
-            } else {
-                platform::open_external(&url);
-                false
-            }
-        })
-        .with_new_window_req_handler(move |url, _features| {
-            if url.starts_with(&fo2) {
-                let _ = p_new.send_event(UserEvent::LoadContent(url));
-            } else {
-                platform::open_external(&url);
-            }
-            wry::NewWindowResponse::Deny
-        })
-        .with_initialization_script(include_str!("../ui/content.js"))
-        .with_on_page_load_handler(move |ev, url| {
-            if let PageLoadEvent::Finished = ev {
-                let _ = p_load.send_event(UserEvent::PageLoaded(url));
-            }
-        })
-        .with_devtools(std::env::var_os("CONDOR_DEVTOOLS").is_some());
-    let content = content_builder.build_as_child(&window).expect("create content webview");
-
-
     render::set_roots(&st.roots);
     let settings = state::load_settings();
     render::set_width(&settings.doc_width);
+    let ctx = WebContext::new(Some(state::local_data_dir().join(platform::WEBVIEW_DATA)));
+
+    // The main window comes first so its id is known; the shell map gets it right after.
+    let main_window = build_window(&event_loop, st.window, LogicalSize::new(1200.0, 800.0));
+    let main = main_window.id();
     let mut app = App {
         env,
-        current: None,
-        current_url: String::new(),
-        restoring: false,
-        last_saved: None,
-        ui_dpr: None,
-        watcher,
-        banner: false,
-        exe: update::exe_path(),
-        update_ready: false,
-        filters: Arc::new(filters::Filters::from_state(&st, &settings)),
-        settings_sig: watch::signature(&state::settings_file().to_string_lossy()),
-        settings,
+        proxy,
+        ctx,
+        main,
+        shells: HashMap::new(),
+        popout_order: Vec::new(),
+        panes: HashMap::new(),
+        next_pane: 1,
         save_at: None,
         next_poll: Instant::now() + SCROLL_POLL,
+        last_saved: None,
+        filters: Arc::new(filters::Filters::from_state(&st, &settings)),
+        exe: update::exe_path(),
+        update_ready: false,
+        restart_at: None,
+        settings_sig: watch::signature(&state::settings_file().to_string_lossy()),
+        settings,
         st,
-        window,
-        ui,
-        content,
-        proxy,
     };
-    app.layout();
+    let ui = build_ui(&mut app.ctx, &main_window, &app.proxy, Kind::Main);
+    app.shells.insert(main, Shell { kind: Kind::Main, ui, window: main_window, ui_dpr: None, panes: Vec::new(), focused: 0 });
+    let first = app.st.open_file.clone();
+    let id = app.add_pane(main, first.as_deref());
+    app.shells.get_mut(&main).unwrap().focused = id;
+    if app.st.split {
+        let second = app.st.split_file.clone();
+        app.add_pane(main, second.as_deref());
+    }
+    app.layout(main);
+    for po in app.st.popouts.clone() {
+        app.pop_out(&event_loop, po.file.as_deref(), po.window);
+    }
     app.save_now();
     if let Some(exe) = app.exe.clone() {
         let p = app.proxy.clone();
@@ -785,52 +1142,52 @@ fn main() {
             let _ = p.send_event(UserEvent::UpdateAvailable);
         });
     }
-    let _ctx = ctx; // keep the web context alive for the life of the app
 
-    event_loop.run(move |event, _target, control_flow| {
-        let _ = &_ctx;
+    event_loop.run(move |event, target, control_flow| {
         match event {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {}
             Event::UserEvent(ev) => match ev {
-                UserEvent::Ipc(s) => match serde_json::from_str::<Cmd>(&s) {
-                    Ok(cmd) => app.handle_cmd(cmd),
+                UserEvent::Ipc(wid, s) => match serde_json::from_str::<Cmd>(&s) {
+                    Ok(cmd) => app.handle_cmd(target, wid, cmd),
                     Err(e) => log(&format!("bad ipc {s}: {e}")),
                 },
                 UserEvent::Listed(msg) => {
-                    let _ = app.ui.evaluate_script(&format!("window.condor && condor.recv({msg})"));
+                    if let Some(sh) = app.shells.get(&app.main) {
+                        let _ = sh.ui.evaluate_script(&format!("window.condor && condor.recv({msg})"));
+                    }
                 }
-                UserEvent::ContentNav(url) => app.on_content_nav(&url),
-                UserEvent::PageLoaded(url) => app.on_page_loaded(&url),
-                UserEvent::Scroll(url, y, sel) => {
-                    app.on_scroll(&url, y);
-                    app.on_selection(&url, sel);
+                UserEvent::ContentNav(id, url) => app.on_content_nav(id, &url),
+                UserEvent::PageLoaded(id, url) => app.on_page_loaded(id, &url),
+                UserEvent::Scroll(id, url, y, sel) => app.on_scroll(id, &url, y, sel),
+                UserEvent::FileChanged(id, p, deleted) => app.on_file_changed(id, &p, deleted),
+                UserEvent::ReloadAt(id, url, y) => app.on_reload_at(id, &url, y),
+                UserEvent::NoPreview(id, path) => app.on_no_preview(id, &path),
+                UserEvent::LoadContent(id, url) => {
+                    if let Some(p) = app.panes.get(&id) {
+                        let _ = p.content.load_url(&url);
+                    }
                 }
-                UserEvent::FileChanged(p, deleted) => app.on_file_changed(&p, deleted),
-                UserEvent::ReloadAt(url, y) => app.on_reload_at(&url, y),
+                UserEvent::Focus(id) => app.set_focus(id),
                 UserEvent::UpdateAvailable => {
                     app.update_ready = true;
-                    app.send_ui(&json!({"ev": "update"}));
+                    let wids: Vec<WindowId> = app.shells.keys().copied().collect();
+                    for w in wids {
+                        app.send_ui(w, &json!({"ev": "update"}));
+                    }
                 }
-                UserEvent::RestartAt(url, y) => {
-                    if app.restart(&url, y) {
+            },
+            Event::WindowEvent { window_id, event, .. } => match event {
+                WindowEvent::CloseRequested => {
+                    if window_id == app.main {
+                        app.poll_scroll();
+                        app.save_now();
                         *control_flow = ControlFlow::Exit;
                         return;
                     }
-                }
-                UserEvent::NoPreview(path) => app.on_no_preview(&path),
-                UserEvent::LoadContent(url) => {
-                    let _ = app.content.load_url(&url);
-                }
-            },
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => {
-                    app.poll_scroll();
-                    app.save_now();
-                    *control_flow = ControlFlow::Exit;
-                    return;
+                    app.close_popout(window_id);
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                    app.layout();
+                    app.layout(window_id);
                     app.mark_dirty();
                 }
                 WindowEvent::Moved(_) => app.mark_dirty(),
@@ -841,6 +1198,13 @@ fn main() {
         }
 
         let now = Instant::now();
+        if app.restart_at.map_or(false, |t| now >= t) {
+            app.restart_at = None;
+            if app.restart() {
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+        }
         if now >= app.next_poll {
             app.poll_scroll();
             app.check_settings();
@@ -849,7 +1213,7 @@ fn main() {
             app.save_now();
         }
         let mut wake = app.next_poll;
-        if let Some(t) = app.save_at {
+        for t in [app.save_at, app.restart_at].into_iter().flatten() {
             wake = wake.min(t);
         }
         *control_flow = ControlFlow::WaitUntil(wake);

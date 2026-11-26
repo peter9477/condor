@@ -135,6 +135,9 @@ pub fn history_go(wv: &wry::WebView, back: bool) {
     let _ = wv.evaluate_script(if back { "history.back()" } else { "history.forward()" });
 }
 
+/// Not available here; panes are focused by clicking their bar instead.
+pub fn on_focus(_wv: &wry::WebView, _f: impl Fn() + 'static) {}
+
 /// Not known here; the buttons simply stay enabled.
 pub fn history_state(_wv: &wry::WebView) -> Option<(bool, bool)> {
     None

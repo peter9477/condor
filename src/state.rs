@@ -42,6 +42,23 @@ pub struct EnvState {
     pub excludes: Vec<String>,
     /// Files that reload automatically when they change on disk.
     pub auto_reload: BTreeSet<String>,
+    /// Files last viewed as source rather than rendered (opening them uses that view).
+    pub source_view: BTreeSet<String>,
+    /// The main window is split into two panes; the second shows `split_file`.
+    pub split: bool,
+    pub split_file: Option<String>,
+    /// Side by side (true) or stacked; the first pane's share of the space.
+    pub split_side_by_side: bool,
+    pub split_ratio: f64,
+    /// Files popped out into their own windows (reopened on start).
+    pub popouts: Vec<Popout>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct Popout {
+    pub file: Option<String>,
+    pub window: Option<WinGeom>,
 }
 
 impl Default for EnvState {
@@ -60,6 +77,12 @@ impl Default for EnvState {
             show_hidden: false,
             viewable_only: false,
             excludes: Vec::new(),
+            source_view: BTreeSet::new(),
+            split: false,
+            split_file: None,
+            split_side_by_side: true,
+            split_ratio: 0.5,
+            popouts: Vec::new(),
         }
     }
 }

@@ -13,6 +13,7 @@
 //! - `confirm`: a native OK / Cancel question.
 //! - `tune_ui_webview`: platform-specific webview builder settings.
 //! - `history_go` / `history_state`: back and forward in a webview's history.
+//! - `on_focus`: be told when a webview gets keyboard focus.
 //!
 //! Add new OS-specific behaviour as a function here rather than with `cfg` at the call site.
 

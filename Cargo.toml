@@ -16,6 +16,8 @@ syntect = { version = "5", default-features = false, features = ["default-syntax
 
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.18", default-features = false }
+# Same version wry uses; for WebView2 events wry doesn't expose (focus).
+webview2-com = "0.39"
 
 [profile.release]
 opt-level = "s"

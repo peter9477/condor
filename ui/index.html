@@ -19,8 +19,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   font: 13px/1.4 "Segoe UI", system-ui, sans-serif; user-select: none; }
 #side { position: absolute; left: 0; top: 0; bottom: 0; width: var(--w); display: flex; flex-direction: column; }
 #bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-#bar .title { flex: 1; font-weight: 600; color: var(--muted); letter-spacing: .04em; font-size: 11px; text-transform: uppercase;
-  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#bar .spacer { flex: 1; }
 #bar button { border: 0; background: none; color: var(--fg); font: inherit; font-size: 15px; width: 26px; height: 24px;
   border-radius: 4px; cursor: pointer; }
 #bar button:hover { background: var(--hover); }
@@ -28,9 +27,27 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #tree { flex: 1; overflow: auto; padding: 4px 0 24px; outline: none; }
 #split { position: absolute; top: 0; bottom: 0; left: var(--w); width: 5px; cursor: col-resize; background: var(--split); }
 #split:hover, #split.drag { background: var(--cursor); }
-/* Shows through the 1px gap above the content view, and edges the splitter, framing the document pane. */
-#pane { position: absolute; left: calc(var(--w) + 5px); right: 0; top: 0; bottom: 0; background: var(--border); }
 #split { box-shadow: inset -1px 0 var(--border); }
+/* Each pane: a bar with the file's name and controls, an optional banner, and a frame whose
+   1px top line shows above the document (the document view covers the rest). */
+.pframe { position: absolute; background: var(--border); }
+.pane-focus .pframe { background: var(--cursor); }
+.pbar { position: absolute; height: 32px; display: flex; align-items: center; gap: 2px; padding: 0 6px;
+  background: var(--bg); overflow: hidden; }
+.pbar .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; font-weight: 600; }
+.pbar button { border: 0; background: none; color: var(--fg); font: inherit; font-size: 15px; min-width: 26px; height: 24px;
+  border-radius: 4px; cursor: pointer; padding: 0 4px; flex: none; }
+.pbar button:hover { background: var(--hover); }
+.pbar button.on { background: var(--sel); color: var(--cursor); }
+.pbar button:disabled { opacity: .35; cursor: default; }
+.pbar button:disabled:hover { background: none; }
+.pbar .b-auto, .pbar .b-src { font-size: 11px; }
+.pbar .b-src { font-family: ui-monospace, Consolas, monospace; }
+.split-pane:not(.pane-focus) .pname { color: var(--muted); font-weight: 400; }
+#pdiv { position: absolute; background: var(--split); }
+#pdiv.v { cursor: col-resize; } #pdiv.h { cursor: row-resize; }
+#pdiv:hover, #pdiv.drag { background: var(--cursor); }
+body.popout #side, body.popout #split { display: none; }
 .row { display: flex; align-items: center; height: 22px; padding-right: 6px; white-space: nowrap; cursor: default; border: 1px solid transparent; }
 .row:hover { background: var(--hover); }
 .row.sel { background: var(--sel); }
@@ -54,43 +71,34 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px; user-select: text; }
 #fpanel .fbtns, #spanel .fbtns { display: flex; justify-content: flex-end; }
 #fpanel button, #spanel button { font: inherit; padding: 2px 12px; }
-#banner { position: absolute; left: calc(var(--w) + 5px); right: 0; top: 0; height: 34px; display: flex; align-items: center;
-  gap: 8px; padding: 0 10px; background: #fff8c5; color: #3b2300; border-bottom: 1px solid #d4a72c; white-space: nowrap; overflow: hidden; }
-@media (prefers-color-scheme: dark) { #banner { background: #3a2f0b; color: #f2e3b3; border-color: #9e6a03; } }
-#banner.info { background: #ddf4ff; color: #0a3069; border-color: #54aeff; }
-#banner.info button { border-color: #0969da; }
-#banner.info button:hover { background: rgba(9,105,218,.15); }
-@media (prefers-color-scheme: dark) { #banner.info { background: #0c2d4a; color: #cae8ff; border-color: #1f6feb; } #banner.info button { border-color: #4493f8; } }
+.pbanner { position: absolute; height: 34px; display: flex; align-items: center;
+  gap: 8px; padding: 0 10px; background: #fff8c5; color: #3b2300; border-top: 1px solid #d4a72c; white-space: nowrap; overflow: hidden; }
+@media (prefers-color-scheme: dark) { .pbanner { background: #3a2f0b; color: #f2e3b3; border-color: #9e6a03; } }
+.pbanner.info { background: #ddf4ff; color: #0a3069; border-color: #54aeff; }
+.pbanner.info button { border-color: #0969da; }
+.pbanner.info button:hover { background: rgba(9,105,218,.15); }
+@media (prefers-color-scheme: dark) { .pbanner.info { background: #0c2d4a; color: #cae8ff; border-color: #1f6feb; } .pbanner.info button { border-color: #4493f8; } }
 #menu { position: fixed; z-index: 10; min-width: 150px; padding: 4px 0; background: var(--bg); border: 1px solid var(--border);
   border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
 #menu button { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--fg); font: inherit; padding: 4px 14px; cursor: pointer; }
 #menu button:hover { background: var(--hover); }
-#banner .msg { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
-#banner button { font: inherit; padding: 2px 10px; border-radius: 4px; border: 1px solid #bf8700; background: transparent; color: inherit; cursor: pointer; }
-#banner button:hover { background: rgba(191,135,0,.2); }
-#banner .close { margin-left: auto; border: 0; font-size: 16px; padding: 0 6px; }
+.pbanner .msg { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+.pbanner button { font: inherit; padding: 2px 10px; border-radius: 4px; border: 1px solid #bf8700; background: transparent; color: inherit; cursor: pointer; }
+.pbanner button:hover { background: rgba(191,135,0,.2); }
+.pbanner .close { margin-left: auto; border: 0; font-size: 16px; padding: 0 6px; }
 #bar #update { width: auto; padding: 0 8px; font-size: 12px; background: #1f883d; color: #fff; border-radius: 12px; margin-right: 4px; }
 #bar #update:hover { background: #1a7f37; }
-#bar #auto { font-size: 11px; width: auto; padding: 0 5px; }
-#bar #src { font-size: 11px; width: auto; padding: 0 5px; font-family: ui-monospace, Consolas, monospace; }
-#bar #auto:disabled, #bar #back:disabled, #bar #fwd:disabled { opacity: .35; cursor: default; }
-#bar #back:disabled:hover, #bar #fwd:disabled:hover { background: none; }
 .dragover > .row { box-shadow: inset 0 2px 0 var(--cursor); }
 </style>
 </head>
 <body>
 <div id="side">
   <div id="bar">
-    <span class="title" id="envname">Condor</span>
     <button id="update" class="hidden" title="A new version of Condor is installed: restart into it (keeps your place)">Restart</button>
-    <button id="back" title="Back (Alt+Left)">&#x2190;</button>
-    <button id="fwd" title="Forward (Alt+Right)">&#x2192;</button>
-    <button id="src" class="hidden" title="View source (Ctrl+U)">&lt;/&gt;</button>
-    <button id="auto" title="Reload the open file automatically when it changes" disabled>AUTO</button>
+    <span class="spacer"></span>
     <button id="filter" title="Filters: hidden files, file types, exclusions">&#x29e9;</button>
     <button id="add" title="Add a folder (root)">+</button>
     <button id="gear" title="Settings (shared by all Condor windows)">&#x2699;</button>
-    <button id="reload" title="Reload the open file (F5)">&#x21bb;</button>
   </div>
   <div id="fpanel" class="hidden">
     <label><input type="checkbox" id="f-hidden"> Show hidden files (dot files)</label>
@@ -113,16 +121,38 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   <div id="tree" tabindex="0"></div>
 </div>
 <div id="split"></div>
-<div id="pane"></div>
-<div id="menu" class="hidden"><button id="m-open">Open</button><button id="m-openwith">Open with&#x2026;</button></div>
-<div id="banner" class="hidden">
-  <span class="msg" id="bmsg"></span>
-  <button id="breload">Reload</button>
-  <button id="bauto" title="Reload this file automatically from now on">Always auto-reload this file</button>
-  <button id="bopen" title="Open in its default application">Open</button>
-  <button id="bopenwith" title="Choose an application to open it with">Open with&#x2026;</button>
-  <button class="close" id="bclose" title="Keep viewing this version">&#x00d7;</button>
+<div id="panes"></div>
+<div id="pdiv" class="hidden"></div>
+<div id="menu" class="hidden">
+  <button id="m-other">Open in other pane</button>
+  <button id="m-window">Open in new window</button>
+  <button id="m-open">Open in default app</button>
+  <button id="m-openwith">Open with&#x2026;</button>
 </div>
+<template id="pane-tpl">
+  <div class="pgroup">
+    <div class="pframe"></div>
+    <div class="pbar">
+      <button class="b-back" title="Back (Alt+Left)">&#x2190;</button>
+      <button class="b-fwd" title="Forward (Alt+Right)">&#x2192;</button>
+      <span class="pname"></span>
+      <button class="b-src hidden" title="View source (Ctrl+U)">&lt;/&gt;</button>
+      <button class="b-auto" title="Reload this file automatically when it changes">AUTO</button>
+      <button class="b-reload" title="Reload (F5)">&#x21bb;</button>
+      <button class="b-split main-only" title="Split">&#x25eb;</button>
+      <button class="b-pop main-only" title="Open in a new window">&#x29c9;</button>
+      <button class="b-close main-only hidden" title="Close this pane">&#x00d7;</button>
+    </div>
+    <div class="pbanner hidden">
+      <span class="msg"></span>
+      <button class="bb-reload">Reload</button>
+      <button class="bb-auto" title="Reload this file automatically from now on">Always auto-reload this file</button>
+      <button class="bb-open" title="Open in its default application">Open</button>
+      <button class="bb-openwith" title="Choose an application to open it with">Open with&#x2026;</button>
+      <button class="close bb-close" title="Dismiss">&#x00d7;</button>
+    </div>
+  </div>
+</template>
 <script>
 "use strict";
 const post = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -436,41 +466,135 @@ tree.addEventListener("drop", (e) => {
 });
 tree.addEventListener("dragend", () => { dragRoot = null; });
 
-// Changed-on-disk banner and per-file auto-reload.
-const banner = document.getElementById("banner");
-const autoBtn = document.getElementById("auto");
-let autoOn = false;
-function showAuto() {
-  autoBtn.disabled = !selected;
-  autoBtn.classList.toggle("on", autoOn);
-  autoBtn.title = autoOn ? "This file reloads automatically when it changes (click to stop)"
-                         : "Reload the open file automatically when it changes";
+// Panes: the bar above each document (its file and the file's controls), its banner, and
+// the divider of a split. Rust sends the geometry ("layout") and each pane's state.
+const MODE = new URLSearchParams(location.search).get("mode") || "main";
+if (MODE === "popout") document.body.classList.add("popout");
+const PANE_BAR = 32, BANNER = 34;
+const panesEl = document.getElementById("panes");
+const paneEls = new Map();     // id -> {group, bar, banner, state}
+let canOpenWith = false;
+
+function paneEl(id) {
+  let p = paneEls.get(id);
+  if (p) return p;
+  const group = document.getElementById("pane-tpl").content.firstElementChild.cloneNode(true);
+  const q = (c) => group.querySelector(c);
+  p = {group, bar: q(".pbar"), frame: q(".pframe"), banner: q(".pbanner"), state: {}, bannerMsg: null};
+  const send = (cmd, extra) => post(Object.assign({cmd, pane: id}, extra || {}));
+  p.bar.addEventListener("mousedown", () => post({cmd: "focus", pane: id}));
+  q(".b-back").onclick = () => send("back");
+  q(".b-fwd").onclick = () => send("forward");
+  q(".b-src").onclick = () => send("toggleSource");
+  q(".b-reload").onclick = () => send("reload");
+  q(".b-auto").onclick = () => { if (p.state.file) post({cmd: "autoReload", path: p.state.file, on: !p.state.auto}); };
+  q(".b-split").onclick = () => send("split");
+  q(".b-pop").onclick = () => send("popOut");
+  q(".b-close").onclick = () => send("closePane");
+  q(".bb-reload").onclick = () => send("reload");
+  q(".bb-auto").onclick = () => { if (p.state.file) post({cmd: "autoReload", path: p.state.file, on: true}); };
+  q(".bb-close").onclick = () => send("dismiss");
+  q(".bb-open").onclick = () => post({cmd: "openExternal", path: p.bannerMsg.path, with: false});
+  q(".bb-openwith").onclick = () => post({cmd: "openExternal", path: p.bannerMsg.path, with: true});
+  for (const b of group.querySelectorAll(".main-only")) if (MODE !== "main") b.remove();
+  panesEl.append(group);
+  paneEls.set(id, p);
+  return p;
 }
-autoBtn.onclick = () => { if (selected) post({cmd: "autoReload", path: selected, on: !autoOn}); };
-document.getElementById("breload").onclick = () => post({cmd: "reload"});
-document.getElementById("bauto").onclick = () => { if (selected) post({cmd: "autoReload", path: selected, on: true}); };
-document.getElementById("bclose").onclick = () => post({cmd: "dismiss"});
-let bannerPath = null;
-function showBanner(msg) {
-  banner.classList.toggle("hidden", !msg.show);
-  if (!msg.show) return;
-  bannerPath = msg.path;
+
+function place(el, x, y, w, h) {
+  el.style.left = x + "px"; el.style.top = y + "px"; el.style.width = Math.max(0, w) + "px";
+  if (h !== undefined) el.style.height = Math.max(0, h) + "px";
+}
+
+let lastLayout = null;
+function onLayout(msg) {
+  lastLayout = msg;
+  const live = new Set();
+  for (const r of msg.panes) {
+    live.add(r.id);
+    const p = paneEl(r.id);
+    p.group.classList.toggle("pane-focus", r.focused && msg.split);
+    p.group.classList.toggle("split-pane", msg.split);
+    place(p.frame, r.x, r.y, r.w, r.h);
+    place(p.bar, r.x, r.y, r.w, PANE_BAR);
+    place(p.banner, r.x, r.y + PANE_BAR, r.w, BANNER);
+    const sb = p.group.querySelector(".b-split");
+    if (sb) {
+      sb.innerHTML = !msg.split ? "&#x25eb;" : msg.sideBySide ? "&#x229f;" : "&#x25eb;";
+      sb.title = !msg.split ? "Split into two panes" : msg.sideBySide ? "Stack the panes" : "Put the panes side by side";
+    }
+    const cb = p.group.querySelector(".b-close");
+    if (cb) cb.classList.toggle("hidden", !msg.split);
+  }
+  for (const [id, p] of paneEls) if (!live.has(id)) { p.group.remove(); paneEls.delete(id); }
+  const d = document.getElementById("pdiv");
+  d.classList.toggle("hidden", !msg.divider);
+  if (msg.divider) {
+    place(d, msg.divider.x, msg.divider.y, msg.divider.w, msg.divider.h);
+    d.classList.toggle("v", msg.sideBySide);
+    d.classList.toggle("h", !msg.sideBySide);
+  }
+}
+
+function onPane(msg) {
+  const p = paneEl(msg.id);
+  p.state = msg;
+  const q = (c) => p.group.querySelector(c);
+  q(".pname").textContent = msg.file ? baseName(msg.file) : "";
+  q(".pname").title = msg.file || "";
+  const src = q(".b-src");
+  src.classList.toggle("hidden", !msg.canSource);
+  src.classList.toggle("on", !!msg.source);
+  src.title = msg.source ? "Show the rendered view (Ctrl+U)" : "View source (Ctrl+U)";
+  const auto = q(".b-auto");
+  auto.disabled = !msg.file;
+  auto.classList.toggle("on", !!msg.auto);
+  auto.title = msg.auto ? "This file reloads automatically when it changes (click to stop)"
+                        : "Reload this file automatically when it changes";
+}
+
+function onHistory(msg) {
+  const p = paneEl(msg.id);
+  p.group.querySelector(".b-back").disabled = !msg.back;
+  p.group.querySelector(".b-fwd").disabled = !msg.forward;
+}
+
+function onBanner(msg) {
+  const p = paneEl(msg.pane);
+  p.banner.classList.toggle("hidden", !msg.show);
+  if (!msg.show) { p.bannerMsg = null; return; }
+  p.bannerMsg = msg;
   const name = baseName(msg.path);
   const open = msg.kind === "open";
-  banner.classList.toggle("info", open);
-  document.getElementById("bmsg").textContent = open ? "Condor can't show " + name + "."
+  const q = (c) => p.banner.querySelector(c);
+  p.banner.classList.toggle("info", open);
+  q(".msg").textContent = open ? "Condor can't show " + name + "."
     : msg.deleted ? name + " was deleted or moved. You are viewing the last version loaded."
     : name + " has changed on disk.";
-  document.getElementById("breload").classList.toggle("hidden", open || !!msg.deleted);
-  document.getElementById("bauto").classList.toggle("hidden", open || !!msg.deleted);
-  document.getElementById("bopen").classList.toggle("hidden", !open);
-  document.getElementById("bopenwith").classList.toggle("hidden", !open || !msg.openWith);
+  q(".bb-reload").classList.toggle("hidden", open || !!msg.deleted);
+  q(".bb-auto").classList.toggle("hidden", open || !!msg.deleted);
+  q(".bb-open").classList.toggle("hidden", !open);
+  q(".bb-openwith").classList.toggle("hidden", !open || !msg.openWith);
+  q(".bb-close").title = open ? "Dismiss" : "Keep viewing this version";
 }
-document.getElementById("bopen").onclick = () => post({cmd: "openExternal", path: bannerPath, with: false});
-document.getElementById("bopenwith").onclick = () => post({cmd: "openExternal", path: bannerPath, with: true});
+
+// Dragging the divider between two panes.
+{
+  const d = document.getElementById("pdiv");
+  let raf = null;
+  d.addEventListener("pointerdown", (e) => { d.setPointerCapture(e.pointerId); d.classList.add("drag"); });
+  d.addEventListener("pointermove", (e) => {
+    if (!d.hasPointerCapture(e.pointerId) || !lastLayout) return;
+    const a = lastLayout.area;
+    const ratio = lastLayout.sideBySide ? (e.clientX - a.x) / a.w : (e.clientY - a.y) / a.h;
+    if (raf === null) raf = requestAnimationFrame(() => { raf = null; post({cmd: "paneRatio", ratio}); });
+  });
+  d.addEventListener("pointerup", (e) => { d.releasePointerCapture(e.pointerId); d.classList.remove("drag"); });
+}
 
 // Right-click a file in the tree: open it in another application.
-let canOpenWith = false, menuPath = null;
+let menuPath = null;
 const menu = document.getElementById("menu");
 function hideMenu() { menu.classList.add("hidden"); }
 tree.addEventListener("contextmenu", (e) => {
@@ -486,6 +610,8 @@ tree.addEventListener("contextmenu", (e) => {
   menu.style.top = Math.min(e.clientY, innerHeight - r.height - 4) + "px";
 });
 document.getElementById("m-open").onclick = () => { hideMenu(); post({cmd: "openExternal", path: menuPath, with: false}); };
+document.getElementById("m-other").onclick = () => { hideMenu(); post({cmd: "openOther", path: menuPath}); };
+document.getElementById("m-window").onclick = () => { hideMenu(); post({cmd: "popOut", path: menuPath}); };
 document.getElementById("m-openwith").onclick = () => { hideMenu(); post({cmd: "openExternal", path: menuPath, with: true}); };
 document.addEventListener("mousedown", (e) => { if (!menu.contains(e.target)) hideMenu(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
@@ -518,8 +644,6 @@ function relistAll() {
   for (const [p, n] of nodes) if (n.dataset.dir && loaded.has(p)) post({cmd: "list", path: p});
 }
 document.getElementById("add").onclick = () => post({cmd: "addRoot"});
-document.getElementById("reload").onclick = () => post({cmd: "reload"});
-document.getElementById("back").onclick = () => post({cmd: "back"});
 // Settings panel (global: saved to settings.json, picked up by every window).
 let settings = {viewable_exts: [], doc_width: "wide"};
 const spanel = document.getElementById("spanel");
@@ -538,8 +662,6 @@ document.getElementById("s-apply").onclick = () => {
     viewable_exts: document.getElementById("s-exts").value.split(/[\s,;]+/).filter(Boolean),
     doc_width: w ? w.value : "wide"}});
 };
-document.getElementById("src").onclick = () => post({cmd: "toggleSource"});
-document.getElementById("fwd").onclick = () => post({cmd: "forward"});
 // The mouse's own back/forward buttons, when the pointer is over the sidebar.
 document.addEventListener("mouseup", (e) => {
   if (e.button === 3 || e.button === 4) { post({cmd: e.button === 3 ? "back" : "forward"}); e.preventDefault(); }
@@ -578,17 +700,9 @@ window.condor = {
     switch (msg.ev) {
       case "update": document.getElementById("update").classList.remove("hidden"); break;
       case "settings": settings = msg.settings; if (spanel.classList.contains("hidden")) showSettings(); break;
-      case "view": {
-        const b = document.getElementById("src");
-        b.classList.toggle("hidden", !msg.can);
-        b.classList.toggle("on", !!msg.source);
-        b.title = msg.source ? "Show the rendered view (Ctrl+U)" : "View source (Ctrl+U)";
-        break;
-      }
-      case "history":
-        document.getElementById("back").disabled = !msg.back;
-        document.getElementById("fwd").disabled = !msg.forward;
-        break;
+      case "layout": onLayout(msg); break;
+      case "pane": onPane(msg); break;
+      case "history": onHistory(msg); break;
       case "init":
         document.getElementById("update").classList.toggle("hidden", !msg.update);
         expanded = new Set(msg.expanded);
@@ -601,7 +715,6 @@ window.condor = {
         settings = msg.settings; showSettings();
         lastDpr = devicePixelRatio;
         post({cmd: "sidebar", width: msg.sidebar, dpr: devicePixelRatio});
-        document.getElementById("envname").textContent = msg.env === "default" ? "Condor" : msg.env;
         renderRoots();
         break;
       case "roots":
@@ -610,9 +723,8 @@ window.condor = {
         renderRoots();
         break;
       case "list": onList(msg); break;
-      case "selected": select(msg.path); autoOn = !!msg.auto; showAuto(); break;
-      case "auto": if (msg.path === selected) { autoOn = msg.on; showAuto(); } break;
-      case "banner": showBanner(msg); break;
+      case "selected": select(msg.path); break;
+      case "banner": onBanner(msg); break;
       case "filter": filters = msg.filters; showFilter(); relistAll(); break;
     }
   }

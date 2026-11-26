@@ -152,6 +152,24 @@ pub fn history_go(wv: &wry::WebView, back: bool) {
     }
 }
 
+/// Call `f` whenever the webview gets keyboard focus (e.g. the user clicks in it).
+pub fn on_focus(wv: &wry::WebView, f: impl Fn() + 'static) {
+    use webview2_com::FocusChangedEventHandler;
+    use wry::WebViewExtWindows;
+    let c = wv.controller();
+    let mut token = 0i64;
+    // SAFETY: registering an event handler on a live controller, on the UI thread.
+    unsafe {
+        let _ = c.add_GotFocus(
+            &FocusChangedEventHandler::create(Box::new(move |_, _| {
+                f();
+                Ok(())
+            })),
+            &mut token,
+        );
+    }
+}
+
 /// Whether there is somewhere to go (back, forward).
 pub fn history_state(wv: &wry::WebView) -> Option<(bool, bool)> {
     use wry::WebViewExtWindows;

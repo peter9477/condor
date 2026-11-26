@@ -7,8 +7,7 @@ Ideas recorded for later; none of these are implemented yet.
 - Editable list of "viewable" extensions in the filter panel (stored as `viewable_exts`
   in the environment file; edit the JSON by hand for now).
 
-- Split view: two or more document panes side by side or stacked, each with its own
-  history and change banner; the tree opens into the focused pane.
+- More than two panes in a window.
 
 ## Tags and stars
 - Tag files and folders with short words, shown as badges in the tree; a star is a

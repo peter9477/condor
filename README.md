@@ -8,15 +8,21 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
 - Works with WSL paths (`\\wsl$\...`) and network shares; folders are read lazily in the background.
 - Links between documents work, and so do file and folder paths written in code style
   (`src/main.rs`, `../README.md:42`, `src/ui/`) when they exist, relative to the document or
-  to its root folder. The tree follows along. ← / → in the toolbar, Alt+Left/Right and the
-  mouse's side buttons go back and forward.
+  to its root folder. The tree follows along. ← / →, Alt+Left/Right and the mouse's side
+  buttons go back and forward.
 - Each document's scroll position and text selection are kept, both while moving between
   documents and across restarts (PDFs keep their position only within the PDF viewer).
-- `</>` in the toolbar (or Ctrl+U) switches Markdown, HTML and SVG files between the
-  rendered view and highlighted source.
+- `</>` (or Ctrl+U) switches Markdown, HTML and SVG files between the rendered view and
+  highlighted source; each file remembers which view you last used.
 - Files Condor can't show (spreadsheets, Word documents, other binaries) get **Open** and
   **Open with…** buttons; right-clicking any file in the tree offers the same. Programs and
   scripts ask before running.
+- Each document has a bar above it with its name and its own controls: back/forward, source
+  view, AUTO reload, reload. ◫ splits the window into two panes (click again to switch
+  between side by side and stacked; drag the divider to resize); the tree opens files in the
+  focused pane. ⧉ opens a file in its own window, with no tree; right-clicking a file in the
+  tree offers "Open in other pane" and "Open in new window". Splits and windows come back
+  on restart.
 - Remembers its state per environment: roots, expanded folders, open file, scroll position, window placement.
 
 Built in Rust on [wry](https://github.com/tauri-apps/wry) and [tao](https://github.com/tauri-apps/tao)
