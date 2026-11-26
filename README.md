@@ -50,6 +50,9 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   bar) to star it or give it tags, shown as badges in the tree; `*` stars the item under
   the keyboard cursor. The chips above the tree filter it to items with any of the chosen
   tags, plus the folders leading to them. Tags are kept per environment, by path.
+- Opening a file from the tree (click, Enter, a search result) puts the keyboard in the
+  document. There, Left/Right page back and forward: a page at a time in the built-in Word
+  view, else a screenful (unless the document scrolls sideways).
 - Hiding: right-click → Hide (or "Hidden" in a document's # box) takes a file or folder out
   of the tree and out of search results, e.g. old revisions. The ⊘ N hidden chip above the
   tree shows them again, dimmed, until clicked again, so they can be unhidden.

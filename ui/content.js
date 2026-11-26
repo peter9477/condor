@@ -94,6 +94,19 @@
     var source = /(^|&)source(&|$)/.test(location.search.slice(1));
     location.href = location.pathname + (source ? "" : "?source");
   }, true);
+  // Left/Right page back and forward: a page at a time in documents that have pages (they
+  // set __condorPage), else a screenful, unless the document scrolls sideways.
+  window.addEventListener("keydown", function (e) {
+    if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    var t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    var dir = e.key === "ArrowRight" ? 1 : -1;
+    if (window.__condorPage) { e.preventDefault(); window.__condorPage(dir); return; }
+    var el = document.scrollingElement || document.documentElement;
+    if (el.scrollWidth > el.clientWidth + 2) return;
+    e.preventDefault();
+    window.scrollBy({ top: dir * Math.max(40, window.innerHeight - 40), behavior: "instant" });
+  }, true);
   window.addEventListener("scroll", saveSoon, { passive: true });
   document.addEventListener("selectionchange", saveSoon);
   window.addEventListener("pagehide", save);

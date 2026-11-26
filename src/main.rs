@@ -850,6 +850,8 @@ impl App {
                 if let Some(p) = focused.and_then(|f| self.panes.get(&f)) {
                     debug(|| format!("open {path}"));
                     let _ = p.content.load_url(&self.url_for(&path));
+                    // Opened from the tree (click, Enter, a search result): keys go to the document.
+                    let _ = p.content.focus();
                 }
             }
             Cmd::Expand { path, open } => {

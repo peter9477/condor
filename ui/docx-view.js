@@ -214,6 +214,17 @@ async function render(out) {
       if (n !== last) { last = n; try { sessionStorage.setItem(key, String(n)); } catch (e) {} }
     };
     addEventListener("scroll", note, {passive: true});
+    // Left/Right (handled in Condor's content.js): to the next page's top, or back to this
+    // page's top, then the one before.
+    window.__condorPage = (dir) => {
+      // A page shown from its top sits 8 px down (a margin).
+      const tops = pages.map((p) => p.getBoundingClientRect().top - 8);
+      let i = 0;
+      tops.forEach((t, j) => { if (t <= 2) i = j; });
+      let to = dir > 0 ? i + 1 : (tops[i] < -2 ? i : i - 1);
+      to = Math.max(0, Math.min(pages.length - 1, to));
+      scrollBy({top: tops[to], behavior: "instant"});
+    };
   } catch (e) {
     out.innerHTML = "";
     const d = document.createElement("div");
