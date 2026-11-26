@@ -90,6 +90,12 @@ pub fn to_pdf(path: &str) -> Result<Vec<u8>, String> {
     let work = base.join("convert-work");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    // Convert a local copy: LibreOffice may leave a lock file beside the document it opens,
+    // and the original may be on a slow share (one plain read beats LibreOffice's access).
+    let input = work.join("in");
+    std::fs::create_dir_all(&input).map_err(|e| e.to_string())?;
+    let copy = input.join(Path::new(path).file_name().ok_or("no file name")?);
+    std::fs::copy(path, &copy).map_err(|e| format!("couldn't read the file: {e}"))?;
     let profile = format!("file:///{}", base.join("libreoffice-profile").to_string_lossy().replace('\\', "/").trim_start_matches('/'));
     let mut cmd = std::process::Command::new(soffice);
     cmd.arg("--headless")
@@ -98,7 +104,7 @@ pub fn to_pdf(path: &str) -> Result<Vec<u8>, String> {
         .arg(format!("-env:UserInstallation={profile}"))
         .args(["--convert-to", "pdf", "--outdir"])
         .arg(&work)
-        .arg(path)
+        .arg(&copy)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
