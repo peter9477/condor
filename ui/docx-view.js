@@ -157,6 +157,33 @@ function contents(root) {
   if (saved === "1") show(true);
 }
 
+// Render the document (fetched raw from Condor) into `out`, paginate it, and offer Condor the
+// result to cache.
+async function render(out) {
+  const r = await fetch(location.pathname + "?raw");
+  if (!r.ok) throw new Error(r.status + " " + r.statusText);
+  let data = await r.arrayBuffer();
+  // Windows metafile pictures (EMF/WMF), which browsers can't show, are swapped for PNGs
+  // that Condor draws from them.
+  const zip = await JSZip.loadAsync(data);
+  const metas = Object.keys(zip.files).filter((n) => /\.(emf|wmf)$/i.test(n));
+  if (metas.length) {
+    await Promise.all(metas.map(async (n) => {
+      const m = await fetch(location.pathname + "?media=" + encodeURIComponent(n));
+      if (m.ok) zip.file(n, await m.arrayBuffer());
+    }));
+    data = await zip.generateAsync({type: "uint8array"});
+  }
+  await docx.renderAsync(data, out, null, {
+    className: "docx", inWrapper: true, breakPages: true, ignoreLastRenderedPageBreak: true,
+    experimental: true, renderAltChunks: false, useBase64URL: true,
+  });
+  paginate(out);
+  if (window.DOCX_SIG) {
+    fetch(location.pathname + "?docxcache=" + encodeURIComponent(window.DOCX_SIG), {method: "POST", body: out.innerHTML}).catch(() => {});
+  }
+}
+
 (async () => {
   const out = document.getElementById("doc");
   const fit = () => {
@@ -170,25 +197,9 @@ function contents(root) {
     w.style.zoom = String(Math.min(1, room / need));
   };
   try {
-    const r = await fetch(location.pathname + "?raw");
-    if (!r.ok) throw new Error(r.status + " " + r.statusText);
-    let data = await r.arrayBuffer();
-    // Windows metafile pictures (EMF/WMF), which browsers can't show, are swapped for PNGs
-    // that Condor draws from them.
-    const zip = await JSZip.loadAsync(data);
-    const metas = Object.keys(zip.files).filter((n) => /\.(emf|wmf)$/i.test(n));
-    if (metas.length) {
-      await Promise.all(metas.map(async (n) => {
-        const m = await fetch(location.pathname + "?media=" + encodeURIComponent(n));
-        if (m.ok) zip.file(n, await m.arrayBuffer());
-      }));
-      data = await zip.generateAsync({type: "uint8array"});
-    }
-    await docx.renderAsync(data, out, null, {
-      className: "docx", inWrapper: true, breakPages: true, ignoreLastRenderedPageBreak: true,
-      experimental: true, renderAltChunks: false, useBase64URL: false,
-    });
-    paginate(out);
+    // Condor serves the finished pages when it has them cached; otherwise render them, then
+    // hand them to Condor to cache (images inline, so the copy stands alone).
+    if (!window.DOCX_CACHED) await render(out);
     contents(out);
     fit();
     addEventListener("resize", fit);

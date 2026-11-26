@@ -34,6 +34,9 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   tables split between rows), numbers the pages, shows Windows metafile pictures (EMF/WMF,
   drawn to PNG by Windows), and has a contents menu (☰, top left) built from the document's
   table of contents, or its headings, which stays open beside the pages.
+  Its finished pages are cached locally (`%LOCALAPPDATA%\Condor\docx`, the newest 60) by
+  file, size and modification time, so returning to a document shows it at once without
+  reading it again; a changed file is rendered afresh.
 - `file://` links in Markdown open in Condor, like relative links.
 - Zip files open like folders in the tree: files inside view as usual (Markdown with its
   relative links and images, Office documents, PDFs...). They're extracted on demand to a

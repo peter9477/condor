@@ -21,12 +21,16 @@ const STRICT_CSP: &str = "default-src 'self' data: blob:; script-src 'none'; sty
 
 const DOC_CSS: &str = include_str!("../ui/doc.css");
 
-/// The built-in Word view's page runs these (and nothing else): the bundled renderer and
-/// its zip reader (ui/vendor), and ui/docx-view.js, which fetches the file with `?raw`.
-const DOCX_CSP: &str = "default-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; object-src 'none'; frame-src 'none'";
+/// The built-in Word view's page runs only its own scripts (each response has a fresh nonce):
+/// the bundled renderer and its zip reader (ui/vendor), and ui/docx-view.js, which fetches
+/// the file with `?raw`, or, when the rendered pages are cached, just the latter.
+fn docx_csp(nonce: &str) -> String {
+    format!("default-src 'self' data: blob:; script-src 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; img-src * data: blob:; object-src 'none'; frame-src 'none'")
+}
 const JSZIP_JS: &str = include_str!("../ui/vendor/jszip.min.js");
 const DOCX_PREVIEW_JS: &str = include_str!("../ui/vendor/docx-preview.min.js");
 const DOCX_VIEW_JS: &str = include_str!("../ui/docx-view.js");
+const DOCX_CSS: &str = include_str!("../ui/docx-view.css");
 
 /// Word files the built-in view can show.
 pub fn web_viewable(path: &str) -> bool {
@@ -57,37 +61,94 @@ fn docx_media(path: &str, name: &str) -> Resp {
     }
 }
 
+// ----- The built-in Word view's cache: the rendered, paginated pages (images inline), kept
+// locally by file, its size and time, and this build's renderer; rendering again is skipped.
+
+fn hash_of(parts: &[&[u8]]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for p in parts {
+        p.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The file's version: size and modification time.
+fn docx_sig(path: &str) -> Option<String> {
+    let m = std::fs::metadata(path).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some(format!("{}-{t}", m.len()))
+}
+
+fn docx_cache_file(path: &str, sig: &str) -> std::path::PathBuf {
+    let key = crate::platform::path_key(path);
+    let h = hash_of(&[key.as_bytes(), sig.as_bytes(), DOCX_VIEW_JS.as_bytes(), DOCX_PREVIEW_JS.as_bytes()]);
+    crate::platform::local_data_dir().join("docx").join(format!("{h:016x}.html"))
+}
+
+/// Store the pages docx-view.js rendered (POSTed to `?docxcache=<sig>`), if the file is still
+/// the version it rendered.
+pub fn store_docx(url_path: &str, query: Option<&str>, body: &[u8]) -> Resp {
+    let done = |s: StatusCode| respond(s, "text/plain", None, Vec::new());
+    let Some(sig) = query.and_then(|q| q.split('&').find_map(|p| p.strip_prefix("docxcache="))) else {
+        return done(StatusCode::BAD_REQUEST);
+    };
+    let Some(path) = paths::url_path_to_path(url_path) else { return done(StatusCode::NOT_FOUND) };
+    let Ok(local) = crate::vfs::local(&path) else { return done(StatusCode::NOT_FOUND) };
+    let path = local.to_string_lossy().into_owned();
+    if !web_viewable(&path) || docx_sig(&path).as_deref() != Some(sig) || body.len() > (64 << 20) {
+        return done(StatusCode::CONFLICT);
+    }
+    let file = docx_cache_file(&path, sig);
+    let Some(dir) = file.parent() else { return done(StatusCode::INTERNAL_SERVER_ERROR) };
+    let _ = std::fs::create_dir_all(dir);
+    let tmp = file.with_extension("part");
+    if std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, &file)).is_err() {
+        return done(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    // Keep the newest 60.
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        let mut fs: Vec<_> = rd
+            .flatten()
+            .map(|e| (e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), e.path()))
+            .collect();
+        if fs.len() > 60 {
+            fs.sort_by(|a, b| b.0.cmp(&a.0));
+            for (_, p) in fs.into_iter().skip(60) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+    done(StatusCode::NO_CONTENT)
+}
+
 fn docx_page(path: &str) -> Resp {
     // Not `page()`: the document styles (doc.css) for Markdown would restyle the Word
     // document's tables and images (e.g. `img { max-width: 100% }` hides floating pictures,
     // which sit in zero-width boxes).
+    let nonce = format!("{:016x}", hash_of(&[path.as_bytes(), &std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()).to_le_bytes()]));
+    let sig = docx_sig(path).unwrap_or_default();
+    let cached = (!sig.is_empty()).then(|| std::fs::read_to_string(docx_cache_file(path, &sig)).ok()).flatten();
+    let scripts = match &cached {
+        // Touch it, so pruning keeps what's in use.
+        Some(_) => {
+            let _ = std::fs::File::options().append(true).open(docx_cache_file(path, &sig)).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+            format!("<script nonce=\"{nonce}\">window.DOCX_CACHED = true;</script><script nonce=\"{nonce}\">{DOCX_VIEW_JS}</script>")
+        }
+        None => format!(
+            "<script nonce=\"{nonce}\">window.DOCX_SIG = {};</script><script nonce=\"{nonce}\">{JSZIP_JS}</script>\
+             <script nonce=\"{nonce}\">{DOCX_PREVIEW_JS}</script><script nonce=\"{nonce}\">{DOCX_VIEW_JS}</script>",
+            serde_json::json!(sig)
+        ),
+    };
     let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title><style>\
-         html, body {{ margin: 0; padding: 0; background: #e4e4e4; }}\
-         .docx-wrapper {{ background: transparent !important; padding: 16px !important; }}\
-         .docx-wrapper > section.docx {{ box-shadow: 0 1px 4px rgba(0,0,0,.25); margin-bottom: 16px !important; }}\
-         .msg {{ padding: 24px; font: 14px 'Segoe UI', system-ui, sans-serif; color: #333; }}\
-         #toc-btn {{ position: fixed; top: 8px; left: 8px; z-index: 3; width: 30px; height: 28px; border: 1px solid #c8c8c8;\
-           border-radius: 5px; background: #fafafa; color: #444; font-size: 15px; cursor: pointer; opacity: .85; }}\
-         #toc-btn:hover, #toc-btn.on {{ opacity: 1; background: #fff; }}\
-         body.toc-open #toc-btn {{ display: none; }}\
-         #toc {{ position: fixed; top: 0; left: 0; bottom: 0; width: 236px; z-index: 2; overflow-y: auto; background: #fafafa;\
-           border-right: 1px solid #d0d0d0; font: 13px 'Segoe UI', system-ui, sans-serif; color: #222; padding-bottom: 12px; }}\
-         #toc .toc-head {{ position: sticky; top: 0; background: #fafafa; font-weight: 600; padding: 9px 10px 7px;\
-           border-bottom: 1px solid #e2e2e2; display: flex; justify-content: space-between; align-items: center; }}\
-         #toc .toc-head button {{ border: 0; background: none; font-size: 16px; color: #777; cursor: pointer; padding: 0 4px; border-radius: 4px; }}\
-         #toc .toc-head button:hover {{ background: #e6e6e6; color: #222; }}\
-         #toc a {{ display: block; padding: 3px 10px; color: inherit; text-decoration: none; cursor: pointer; line-height: 1.35; }}\
-         #toc a.l0 {{ font-weight: 600; margin-top: 4px; }}\
-         #toc a:hover {{ background: #ececec; }}\
-         #toc a.cur {{ background: #dde8f7; color: #0b4fa8; }}\
-         #toc .num {{ color: #777; margin-right: 6px; font-weight: 400; }}\
-         body.toc-open {{ margin-left: 237px; }}</style></head><body>\
-         <div id=\"doc\"></div><script>{JSZIP_JS}</script><script>{DOCX_PREVIEW_JS}</script><script>{DOCX_VIEW_JS}</script>\
-         </body></html>",
-        escape(file_name(path))
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title><style>{DOCX_CSS}</style></head><body>\
+         <div id=\"doc\">{}</div>{scripts}</body></html>",
+        escape(file_name(path)),
+        cached.as_deref().unwrap_or("")
     );
-    respond(StatusCode::OK, "text/html; charset=utf-8", Some(DOCX_CSP), html.into_bytes())
+    respond(StatusCode::OK, "text/html; charset=utf-8", Some(&docx_csp(&nonce)), html.into_bytes())
 }
 
 fn respond(status: StatusCode, ctype: &str, csp: Option<&str>, body: Vec<u8>) -> Resp {

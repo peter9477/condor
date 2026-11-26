@@ -382,6 +382,10 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
                 if let Some(p) = paths::url_path_to_path(uri.path()) {
                     w.served(&p, watch::signature(&p));
                 }
+                if req.method() == wry::http::Method::POST {
+                    responder.respond(render::store_docx(uri.path(), uri.query(), req.body()));
+                    return;
+                }
                 responder.respond(render::serve(uri.path(), uri.query()));
             });
         })

@@ -1,0 +1,20 @@
+html, body { margin: 0; padding: 0; background: #e4e4e4; }
+.docx-wrapper { background: transparent !important; padding: 16px !important; }
+.docx-wrapper > section.docx { box-shadow: 0 1px 4px rgba(0,0,0,.25); margin-bottom: 16px !important; }
+.msg { padding: 24px; font: 14px 'Segoe UI', system-ui, sans-serif; color: #333; }
+#toc-btn { position: fixed; top: 8px; left: 8px; z-index: 3; width: 30px; height: 28px; border: 1px solid #c8c8c8;
+border-radius: 5px; background: #fafafa; color: #444; font-size: 15px; cursor: pointer; opacity: .85; }
+#toc-btn:hover, #toc-btn.on { opacity: 1; background: #fff; }
+body.toc-open #toc-btn { display: none; }
+#toc { position: fixed; top: 0; left: 0; bottom: 0; width: 236px; z-index: 2; overflow-y: auto; background: #fafafa;
+border-right: 1px solid #d0d0d0; font: 13px 'Segoe UI', system-ui, sans-serif; color: #222; padding-bottom: 12px; }
+#toc .toc-head { position: sticky; top: 0; background: #fafafa; font-weight: 600; padding: 9px 10px 7px;
+border-bottom: 1px solid #e2e2e2; display: flex; justify-content: space-between; align-items: center; }
+#toc .toc-head button { border: 0; background: none; font-size: 16px; color: #777; cursor: pointer; padding: 0 4px; border-radius: 4px; }
+#toc .toc-head button:hover { background: #e6e6e6; color: #222; }
+#toc a { display: block; padding: 3px 10px; color: inherit; text-decoration: none; cursor: pointer; line-height: 1.35; }
+#toc a.l0 { font-weight: 600; margin-top: 4px; }
+#toc a:hover { background: #ececec; }
+#toc a.cur { background: #dde8f7; color: #0b4fa8; }
+#toc .num { color: #777; margin-right: 6px; font-weight: 400; }
+body.toc-open { margin-left: 237px; }
