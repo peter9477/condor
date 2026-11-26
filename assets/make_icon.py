@@ -68,7 +68,7 @@ def mirror(pts):
 def polys(parts, col):
     return [("poly", p, col) for p in parts]
 
-BG_TOP, BG_BOT = (52, 120, 196), (138, 196, 236)
+BG_TOP, BG_BOT = (154, 188, 226), (197, 226, 246)   # sky, lightened so the bird stands out small
 BIRD, PATCH, RUFF, HEAD = (24, 26, 31), (240, 242, 238), (46, 48, 55), (232, 146, 116)
 BEAK, FEET = (242, 232, 206), (214, 208, 198)
 
