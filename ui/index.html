@@ -137,6 +137,13 @@ body.popout #side, body.popout #split { display: none; }
 #spanel .stype button:hover { color: var(--fg); }
 .pbar .ploading { flex: none; color: var(--muted); font-size: 12px; padding: 0 8px; animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
+.pbar .pflash { flex: none; color: #1a7f37; font-size: 12px; padding: 0 8px; }
+@media (prefers-color-scheme: dark) { .pbar .pflash { color: #3fb950; } }
+.pbar .b-copy svg { display: block; margin: auto; }
+#flash { position: absolute; left: 12px; bottom: 12px; z-index: 20; max-width: calc(var(--w) - 24px); padding: 5px 10px;
+  border-radius: 6px; background: var(--fg); color: var(--bg); font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#menu .kbd { float: right; margin-left: 18px; color: var(--muted); font-size: 11px; }
 #menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
 .pbar .b-star.on { color: #d4a017; background: none; }
 .pbar .b-tags { font-size: 13px; font-weight: 600; }
@@ -191,14 +198,20 @@ body.popout #side, body.popout #split { display: none; }
   <button id="m-window" class="m-file">Open in new window</button>
   <button id="m-open" class="m-file">Open in default app</button>
   <button id="m-openwith" class="m-file">Open with&#x2026;</button>
+  <button id="m-terminal" class="m-dir">Open in Terminal</button>
+  <hr>
+  <button id="m-copy">Copy <span class="kbd">Ctrl+C</span></button>
+  <button id="m-copypath">Copy path <span class="kbd">Ctrl+Shift+C</span></button>
 </div>
+<div id="flash" class="hidden"></div>
 <template id="pane-tpl">
   <div class="pgroup">
     <div class="pframe"></div>
     <div class="pbar">
       <button class="b-back" title="Back (Alt+Left)">&#x2190;</button>
       <button class="b-fwd" title="Forward (Alt+Right)">&#x2192;</button>
-      <span class="pname"></span><span class="ploading hidden">loading…</span>
+      <span class="pname"></span><span class="ploading hidden">loading…</span><span class="pflash hidden"></span>
+      <button class="b-copy" title="Copy the selection, or the whole document"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h1"/></svg></button>
       <button class="b-star" title="Star this file">&#x2606;</button>
       <button class="b-tags" title="Tags">#</button>
       <button class="b-office hidden"></button>
@@ -655,6 +668,11 @@ tree.addEventListener("keydown", (e) => {
     case "Enter": case " ": if (n) activate(n); break;
     case "F5": post({cmd: "reload"}); break;
     case "*": if (n) toggleStar(n.dataset.path, !!n.dataset.dir); break;
+    case "c": case "C":
+      // Ctrl+C copies the file (or folder) itself; Ctrl+Shift+C its path.
+      if (!n || !e.ctrlKey || e.altKey) return;
+      post({cmd: e.shiftKey ? "copyPath" : "copyFile", path: n.dataset.path});
+      break;
     default: return;
   }
   e.preventDefault();
@@ -721,6 +739,7 @@ function paneEl(id) {
   q(".b-fwd").onclick = () => send("forward");
   q(".b-src").onclick = () => send("toggleSource");
   q(".b-reload").onclick = () => send("reload");
+  q(".b-copy").onclick = () => send("copyPane");
   q(".b-office").onclick = () => send("officeView", {mode: p.state.office === "previewer" ? "libreoffice" : "previewer"});
   q(".b-auto").onclick = () => { if (p.state.file) post({cmd: "autoReload", path: p.state.file, on: !p.state.auto}); };
   q(".b-split").onclick = () => send("split");
@@ -1062,6 +1081,7 @@ function openMenu(path, dir, x, y) {
   menuPath = path;
   menuDir = dir;
   for (const el of menu.querySelectorAll(".m-file")) el.classList.toggle("hidden", menuDir);
+  for (const el of menu.querySelectorAll(".m-dir")) el.classList.toggle("hidden", !menuDir);
   document.getElementById("m-openwith").classList.toggle("hidden", menuDir || !canOpenWith);
   document.getElementById("m-star").textContent = tagsOf(menuPath).includes(STAR) ? "Unstar" : "Star";
   menu.dataset.x = x; menu.dataset.y = y;
@@ -1074,6 +1094,21 @@ document.getElementById("m-open").onclick = () => { hideMenu(); post({cmd: "open
 document.getElementById("m-other").onclick = () => { hideMenu(); post({cmd: "openOther", path: menuPath}); };
 document.getElementById("m-window").onclick = () => { hideMenu(); post({cmd: "popOut", path: menuPath}); };
 document.getElementById("m-openwith").onclick = () => { hideMenu(); post({cmd: "openExternal", path: menuPath, with: true}); };
+document.getElementById("m-terminal").onclick = () => { hideMenu(); post({cmd: "openTerminal", path: menuPath}); };
+document.getElementById("m-copy").onclick = () => { hideMenu(); post({cmd: "copyFile", path: menuPath}); };
+document.getElementById("m-copypath").onclick = () => { hideMenu(); post({cmd: "copyPath", path: menuPath}); };
+
+// Short notes ("Copied the path"): in a pane's bar, or at the foot of the tree.
+const flashTimers = new Map();
+function onFlash(msg) {
+  const p = msg.pane != null ? paneEls.get(msg.pane) : null;
+  const el = p ? p.group.querySelector(".pflash") : document.getElementById("flash");
+  if (!el) return;
+  el.textContent = msg.text;
+  el.classList.remove("hidden");
+  clearTimeout(flashTimers.get(el));
+  flashTimers.set(el, setTimeout(() => el.classList.add("hidden"), 1800));
+}
 document.addEventListener("mousedown", (e) => { if (!menu.contains(e.target)) hideMenu(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
 window.addEventListener("blur", hideMenu);
@@ -1219,6 +1254,7 @@ window.condor = {
       case "results": onResults(msg); break;
       case "selected": select(msg.path); break;
       case "banner": onBanner(msg); break;
+      case "flash": onFlash(msg); break;
       case "filter": filters = msg.filters; showFilter(); relistAll(); break;
     }
   }

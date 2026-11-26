@@ -72,6 +72,8 @@ enum UserEvent {
     Checked(String, bool),
     /// Another Condor was started for this environment: come to the front.
     Activate,
+    /// A short note to show in a window (in a pane's bar, or the tree's window).
+    Flash(WindowId, Option<PaneId>, String),
     /// A directory listing finished (JSON message for the main UI).
     Listed(String),
     /// A pane is navigating to this URL.
@@ -113,6 +115,12 @@ enum Cmd {
     Restart,
     SetSettings { settings: state::Settings },
     OpenExternal { path: String, with: bool },
+    /// Clipboard: a file or folder itself (as Explorer copies it), or its path as text.
+    CopyFile { path: String },
+    CopyPath { path: String },
+    /// Clipboard: the pane's selection, else the whole document.
+    CopyPane { pane: Option<PaneId> },
+    OpenTerminal { path: String },
     SetFilters { show_hidden: bool, hide_ignored: bool, viewable_only: bool, excludes: Vec<String> },
     AutoReload { path: String, on: bool },
     // Pane commands: `pane` defaults to the window's focused pane.
@@ -860,6 +868,45 @@ impl App {
                 self.settings_sig = watch::signature(&state::settings_file().to_string_lossy());
                 self.apply_settings(s);
             }
+            Cmd::CopyFile { path } => {
+                let ok = platform::clipboard_files(&[path.clone()]);
+                self.flash(wid, None, if ok { format!("Copied {}", platform::file_name(&path)) } else { "Couldn't copy".into() });
+            }
+            Cmd::CopyPath { path } => {
+                let ok = platform::clipboard_text(&path);
+                self.flash(wid, None, if ok { "Copied the path".into() } else { "Couldn't copy".into() });
+            }
+            Cmd::OpenTerminal { path } => {
+                std::thread::spawn(move || platform::open_terminal(&path));
+            }
+            Cmd::CopyPane { pane } => {
+                let Some(id) = self.pane_of(wid, pane) else { return };
+                let Some(file) = self.panes[&id].current.clone() else { return };
+                let proxy = self.proxy.clone();
+                let selected = move |sel: String, proxy: EventLoopProxy<UserEvent>, file: String| {
+                    // On a worker thread: reading the file may be slow.
+                    std::thread::spawn(move || {
+                        let (ok, what) = if !sel.is_empty() {
+                            (platform::clipboard_text(&sel), "Copied the selection")
+                        } else if let Some(text) = text_of_file(&file) {
+                            (platform::clipboard_text(&text), "Copied the text")
+                        } else {
+                            (platform::clipboard_files(&[file.clone()]), "Copied the file")
+                        };
+                        let msg = if ok { what } else { "Couldn't copy" };
+                        let _ = proxy.send_event(UserEvent::Flash(wid, Some(id), msg.to_string()));
+                    });
+                };
+                let p = &self.panes[&id];
+                if p.preview.is_some() {
+                    selected(String::new(), proxy, file);
+                } else {
+                    let _ = p.content.evaluate_script_with_callback("String(window.getSelection ? getSelection() : '')", move |r| {
+                        let sel: String = serde_json::from_str(&r).unwrap_or_default();
+                        selected(sel, proxy.clone(), file.clone());
+                    });
+                }
+            }
             Cmd::AutoReload { path, on } => {
                 let changed = if on { self.st.auto_reload.insert(path.clone()) } else { self.st.auto_reload.remove(&path) };
                 if changed {
@@ -1452,6 +1499,7 @@ impl App {
                 }
                 UserEvent::Focus(id) => self.set_focus(id),
                 UserEvent::Activate => self.activate(),
+                UserEvent::Flash(wid, pane, text) => self.flash(wid, pane, text),
                 UserEvent::Opened(..) | UserEvent::Checked(..) => {}
                 UserEvent::UpdateAvailable => {
                     self.update_ready = true;
@@ -1533,6 +1581,11 @@ impl App {
         }
     }
 
+    /// A short note ("Copied the path") in the window, by the pane's bar or the tree.
+    fn flash(&self, wid: WindowId, pane: Option<PaneId>, text: String) {
+        self.send_ui(wid, &json!({"ev": "flash", "pane": pane, "text": text}));
+    }
+
     /// Another start of this environment: bring the main window to the front.
     fn activate(&mut self) {
         if let Some(sh) = self.shells.get(&self.main) {
@@ -1574,6 +1627,19 @@ enum Phase {
     Start(Starter, WebContext),
     Run(App),
     Switching,
+}
+
+/// A file's text, if it is text (UTF-8 without NULs, at most 8 MB), for copying.
+fn text_of_file(path: &str) -> Option<String> {
+    let m = std::fs::metadata(path).ok()?;
+    if m.len() > 8 << 20 {
+        return None;
+    }
+    let b = std::fs::read(path).ok()?;
+    if b.contains(&0) {
+        return None;
+    }
+    String::from_utf8(b).ok()
 }
 
 fn waiting_msg(e: &envs::Env) -> serde_json::Value {

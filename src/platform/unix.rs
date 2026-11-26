@@ -62,6 +62,20 @@ pub fn app_icon() -> Option<tao::window::Icon> {
     None
 }
 
+pub fn clipboard_text(_text: &str) -> bool {
+    false
+}
+
+pub fn clipboard_files(_paths: &[String]) -> bool {
+    false
+}
+
+pub fn open_terminal(dir: &str) {
+    let (prog, args): (&str, Vec<&str>) =
+        if cfg!(target_os = "macos") { ("open", vec!["-a", "Terminal", dir]) } else { ("x-terminal-emulator", vec![]) };
+    let _ = std::process::Command::new(prog).args(args).current_dir(dir).spawn();
+}
+
 pub fn config_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
         home().join("Library/Application Support/Condor")

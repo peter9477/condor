@@ -124,6 +124,96 @@ pub fn open_with(path: &str) {
     let _ = std::process::Command::new("rundll32.exe").raw_arg(format!("shell32.dll,OpenAs_RunDLL {path}")).spawn();
 }
 
+/// Put text on the clipboard.
+pub fn clipboard_text(text: &str) -> bool {
+    let w: Vec<u8> = text.encode_utf16().chain([0]).flat_map(|c| c.to_le_bytes()).collect();
+    set_clipboard(&[(13 /* CF_UNICODETEXT */, w)])
+}
+
+/// Put files on the clipboard, as Explorer's Copy does: pasting attaches or copies them.
+pub fn clipboard_files(paths: &[String]) -> bool {
+    // DROPFILES { pFiles, pt.x, pt.y, fNC, fWide }, then NUL-terminated wide paths and a final NUL.
+    let mut b: Vec<u8> = [20u32, 0, 0, 0, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+    for p in paths {
+        b.extend(p.encode_utf16().chain([0]).flat_map(|c| c.to_le_bytes()));
+    }
+    b.extend([0, 0]);
+    let effect = unsafe {
+        windows::Win32::System::DataExchange::RegisterClipboardFormatW(windows::core::w!("Preferred DropEffect"))
+    };
+    set_clipboard(&[(15 /* CF_HDROP */, b), (effect, 1u32.to_le_bytes().to_vec() /* DROPEFFECT_COPY */)])
+}
+
+fn set_clipboard(items: &[(u32, Vec<u8>)]) -> bool {
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    unsafe {
+        // Another program may have the clipboard open for a moment.
+        let mut open = false;
+        for _ in 0..20 {
+            if OpenClipboard(None).is_ok() {
+                open = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        if !open {
+            return false;
+        }
+        let mut ok = EmptyClipboard().is_ok();
+        for (format, bytes) in items {
+            let Ok(h) = GlobalAlloc(GMEM_MOVEABLE, bytes.len()) else { ok = false; continue };
+            let p = GlobalLock(h) as *mut u8;
+            if p.is_null() {
+                let _ = GlobalFree(Some(h));
+                ok = false;
+                continue;
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+            let _ = GlobalUnlock(h);
+            // On success the clipboard owns the memory.
+            if SetClipboardData(*format, Some(HANDLE(h.0))).is_err() {
+                let _ = GlobalFree(Some(HGLOBAL(h.0)));
+                ok = false;
+            }
+        }
+        let _ = CloseClipboard();
+        ok
+    }
+}
+
+/// `\\wsl$\Distro\some\path` (or `\\wsl.localhost\...`): the distro and the Linux path.
+fn wsl_parts(path: &str) -> Option<(String, String)> {
+    let lower = path.to_ascii_lowercase();
+    let rest = ["\\\\wsl$\\", "\\\\wsl.localhost\\"].iter().find_map(|p| lower.starts_with(p).then(|| &path[p.len()..]))?;
+    let (distro, linux) = rest.split_once('\\').unwrap_or((rest, ""));
+    Some((distro.to_string(), format!("/{}", linux.replace('\\', "/").trim_end_matches('/'))))
+}
+
+/// Open a terminal in `dir`: Windows Terminal if installed, else PowerShell. A WSL folder
+/// gets a WSL shell in its Linux path.
+pub fn open_terminal(dir: &str) {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NEW_CONSOLE: u32 = 0x10;
+    if let Some((distro, linux)) = wsl_parts(dir) {
+        let linux = if linux.is_empty() { "/".to_string() } else { linux };
+        if Command::new("wt.exe").args(["wsl.exe", "-d", &distro, "--cd", &linux]).spawn().is_err() {
+            let _ = Command::new("wsl.exe").args(["-d", &distro, "--cd", &linux]).creation_flags(CREATE_NEW_CONSOLE).spawn();
+        }
+        return;
+    }
+    // A trailing backslash would escape the closing quote; ';' separates wt commands.
+    let d = if dir.ends_with('\\') { format!("{dir}.") } else { dir.to_string() };
+    if Command::new("wt.exe").arg("-d").arg(d.replace(';', r"\;")).spawn().is_err() {
+        let _ = Command::new("powershell.exe")
+            .args(["-NoExit", "-Command", &format!("Set-Location -LiteralPath '{}'", d.replace('\'', "''"))])
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn();
+    }
+}
+
 /// Whether opening the file would run it (programs, scripts, shortcuts, installers).
 pub fn is_executable(path: &str) -> bool {
     const ALSO: &[&str] = &["lnk", "url", "hta", "msi", "msp", "scr", "ps1", "psm1", "reg", "cpl", "jar", "pif",
