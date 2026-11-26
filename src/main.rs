@@ -53,6 +53,8 @@ const SAVE_DELAY: Duration = Duration::from_millis(800);
 const SCROLL_POLL: Duration = Duration::from_millis(1500);
 /// How often open folders are checked for added or removed entries.
 const DIR_CHECK: Duration = Duration::from_secs(3);
+/// A resized Windows preview is reopened at its new size this long after resizing stops.
+const PREVIEW_REOPEN: Duration = Duration::from_millis(500);
 
 const UI_HTML: &str = include_str!("../ui/index.html");
 const PICKER_HTML: &str = include_str!("../ui/picker.html");
@@ -191,6 +193,10 @@ struct Pane {
     /// A document is on its way: when to say so, and whether the bar says so now.
     loading: Option<Instant>,
     loading_shown: bool,
+    /// The preview handler's size when opened. Some (Word's) don't reflow when resized, so
+    /// a preview is reopened at the new size once resizing pauses (`preview_reopen`).
+    preview_size: std::cell::Cell<(i32, i32)>,
+    preview_reopen: std::cell::Cell<Option<Instant>>,
 }
 
 struct App {
@@ -557,6 +563,8 @@ impl App {
                 rect: Default::default(),
                 loading: None,
                 loading_shown: false,
+                preview_size: Default::default(),
+                preview_reopen: Default::default(),
             },
         );
         if let Some(sh) = self.shells.get_mut(&wid) {
@@ -702,6 +710,8 @@ impl App {
             p.rect.set((x as i32, y as i32, w.max(0.0) as i32, h as i32));
             if let Some(pv) = &p.preview {
                 pv.set_rect(p.rect.get());
+                let size = (w as i32, h as i32);
+                p.preview_reopen.set((size != p.preview_size.get()).then(|| Instant::now() + PREVIEW_REOPEN));
             }
             panes.push(json!({"id": id, "x": r.0, "y": r.1, "w": r.2, "h": r.3, "focused": *id == sh.focused}));
         }
@@ -1185,6 +1195,9 @@ impl App {
                 Ok(pv) => {
                     debug(|| format!("previewer for {path}"));
                     let p = self.panes.get_mut(&id).unwrap();
+                    let r = p.rect.get();
+                    p.preview_size.set((r.2, r.3));
+                    p.preview_reopen.set(None);
                     let _ = p.content.set_visible(false);
                     p.preview = Some(pv);
                     self.send_pane_state(id);
@@ -1612,7 +1625,13 @@ impl App {
             self.save_now();
         }
         self.show_loading(now);
+        self.reopen_previews(now);
         let mut wake = self.next_poll.min(self.next_dir_check);
+        for p in self.panes.values() {
+            if let Some(t) = p.preview_reopen.get() {
+                wake = wake.min(t);
+            }
+        }
         for p in self.panes.values() {
             if let (Some(t), false) = (p.loading, p.loading_shown) {
                 wake = wake.min(t);
@@ -1622,6 +1641,37 @@ impl App {
             wake = wake.min(t);
         }
         *control_flow = ControlFlow::WaitUntil(wake);
+    }
+
+    /// Reopen previews whose pane changed size (once resizing has paused), so they lay out
+    /// at the new size.
+    fn reopen_previews(&mut self, now: Instant) {
+        let due: Vec<PaneId> = self
+            .panes
+            .iter()
+            .filter(|(_, p)| p.preview.is_some() && p.preview_reopen.get().map_or(false, |t| now >= t))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            let Some(p) = self.panes.get_mut(&id) else { continue };
+            p.preview_reopen.set(None);
+            let Some(path) = p.current.clone() else { continue };
+            let hwnd = platform::window_handle(&self.shells[&p.shell].window);
+            let local = vfs::local(&path).map(|l| l.to_string_lossy().into_owned()).unwrap_or(path.clone());
+            p.preview = None; // unload the old one first
+            let r = p.rect.get();
+            match platform::Preview::open(hwnd, &local, r) {
+                Ok(pv) => {
+                    p.preview = Some(pv);
+                    p.preview_size.set((r.2, r.3));
+                }
+                Err(e) => {
+                    debug(|| format!("reopening previewer for {path}: {e}"));
+                    let _ = p.content.set_visible(true);
+                    let _ = p.content.reload();
+                }
+            }
+        }
     }
 
     /// Say "loading" in the bar of panes whose document is slow to arrive.
