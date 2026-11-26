@@ -157,6 +157,34 @@ function contents(root) {
   if (saved === "1") show(true);
 }
 
+// Embedded objects (Visio drawings, charts from other programs...) and old-style VML pictures
+// carry a preview picture (<v:imagedata>) that docx-preview doesn't draw. Rewrite each as an
+// ordinary inline picture of that preview, at the size the document gives it.
+function vmlToPictures(xml) {
+  const EMU = {pt: 12700, in: 914400, cm: 360000, mm: 36000, px: 9525};
+  const len = (style, prop) => {
+    const m = new RegExp("(?:^|;)\\s*" + prop + "\\s*:\\s*([\\d.]+)\\s*(pt|in|cm|mm|px)?", "i").exec(style || "");
+    return m ? Math.round(parseFloat(m[1]) * EMU[(m[2] || "px").toLowerCase()]) : 0;
+  };
+  let n = 0;
+  return xml.replace(/<w:(object|pict)\b[\s\S]*?<\/w:\1>/g, (whole, kind) => {
+    if (kind === "pict" && /<v:textbox\b/.test(whole)) return whole;
+    const img = /<v:imagedata\b[^>]*\br:id="([^"]+)"/.exec(whole);
+    const shape = /<v:shape\b[^>]*\bstyle="([^"]*)"/.exec(whole);
+    if (!img || !shape) return whole;
+    const cx = len(shape[1], "width"), cy = len(shape[1], "height");
+    if (!cx || !cy) return whole;
+    n++;
+    return '<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="' + cx + '" cy="' + cy + '"/>' +
+      '<wp:docPr id="' + (90000 + n) + '" name="Object ' + n + '"/>' +
+      '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+      '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="Object ' + n + '"/><pic:cNvPicPr/></pic:nvPicPr>' +
+      '<pic:blipFill><a:blip r:embed="' + img[1] + '"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+      '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+      '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>';
+  });
+}
+
 // Render the document (fetched raw from Condor) into `out`, paginate it, and offer Condor the
 // result to cache.
 async function render(out) {
@@ -166,8 +194,15 @@ async function render(out) {
   // Windows metafile pictures (EMF/WMF), which browsers can't show, are swapped for PNGs
   // that Condor draws from them.
   const zip = await JSZip.loadAsync(data);
+  let changed = false;
+  for (const name of Object.keys(zip.files).filter((n) => /^word\/(document|header\d*|footer\d*)\.xml$/.test(n))) {
+    const xml = await zip.file(name).async("string");
+    if (!/<w:(object|pict)\b/.test(xml)) continue;
+    const fixed = vmlToPictures(xml);
+    if (fixed !== xml) { zip.file(name, fixed); changed = true; }
+  }
   const metas = Object.keys(zip.files).filter((n) => /\.(emf|wmf)$/i.test(n));
-  if (metas.length) {
+  if (metas.length || changed) {
     await Promise.all(metas.map(async (n) => {
       const m = await fetch(location.pathname + "?media=" + encodeURIComponent(n));
       if (m.ok) zip.file(n, await m.arrayBuffer());
