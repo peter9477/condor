@@ -30,6 +30,10 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   (Built-in | PDF | Windows) switches that file type in all windows (a dot marks the type's
   choice; the settings panel lists these so they can be undone). Its lock keeps the current
   viewer for that one file; while locked, the selector changes only that file.
+  The built-in view flows text onto pages as Word does (headings stay with what follows; long
+  tables split between rows), numbers the pages, shows Windows metafile pictures (EMF/WMF,
+  drawn to PNG by Windows), and has a contents menu (☰, top left) built from the document's
+  table of contents, or its headings, which stays open beside the pages.
 - `file://` links in Markdown open in Condor, like relative links.
 - Zip files open like folders in the tree: files inside view as usual (Markdown with its
   relative links and images, Office documents, PDFs...). They're extracted on demand to a
