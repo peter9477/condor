@@ -27,18 +27,18 @@ def finger(root, deg, length, wmax=4.2, lift=4.0, n=10):
     return [at(T*i/n, -1) for i in range(n+1)] + cap + [at(T*i/n, 1) for i in range(n, -1, -1)]
 
 def wing():
-    """Left wing: a broad, nearly flat plank, with seven primaries splayed at the tip."""
-    arm = quad((126, 97), (90, 84), (52, 89)) + [(50, 112)] + quad((57, 136), (92, 147), (126, 148))
+    """Left wing: a broad, nearly flat plank, with eight long primaries splayed at the tip."""
+    arm = quad((126, 96), (90, 84), (54, 88)) + [(51, 110)] + quad((58, 136), (92, 147), (126, 147))
     fingers = []
-    for i in range(7):
-        f = i / 6
-        root = (56 + 4*f, 92 + 40*f)         # along the end of the hand
-        fingers.append(finger(root, 197 - 52*f, 47 - 22*abs(f - 0.35), wmax=4.1))  # fanning up-left to down-left
-    return [arm] + fingers
+    for i in range(8):
+        f = i / 7
+        root = (57 + 5*f, 91 + 42*f)         # along the end of the hand
+        fingers.append(finger(root, 198 - 52*f, 48 - 18*abs(f - 0.3), wmax=3.8))  # fanning up-left to down-left,
+    return [arm] + fingers                   # the rear ones shorter
 
 def patch():
     """The white triangle along the front of the underwing: widest at the body, a point at the wrist."""
-    return quad((118, 101), (90, 90), (60, 93.5)) + quad((62, 99), (94, 105), (118, 127))
+    return quad((118, 100), (90, 89.5), (60, 92.5)) + quad((62, 98.5), (94, 105), (118, 127))
 
 def rot_ellipse(cx, cy, rx, ry, deg, n=40):
     a = math.radians(deg)
@@ -55,12 +55,12 @@ def beak():
     return [(143.5, 79.5), (149.5, 79.5), (153, 83), (152.5, 89), (150, 85.5), (145.5, 86.5)]
 
 def tail():
-    """Short, slightly fanned tail with a rounded end."""
-    return [(114, 150)] + quad((104, 176), (128, 187), (152, 176)) + [(142, 150)]
+    """Short, broad fan of a tail, right behind the wings."""
+    return [(112, 144)] + quad((101, 172), (128, 184), (155, 172)) + [(144, 144)]
 
 def foot(x, lean):
     """A pale foot tucked back along the tail base: a slim sliver, not a dot."""
-    return rot_ellipse(x, 166, 2.2, 6.5, lean)
+    return rot_ellipse(x, 159, 2.2, 5.5, lean)
 
 def mirror(pts):
     return [(S - x, y) for x, y in pts]
@@ -76,7 +76,7 @@ shapes = [  # (kind, data, colour), back to front
     *polys(wing() + [mirror(p) for p in wing()], BIRD),
     *polys([patch(), mirror(patch())], PATCH),
     ("poly", tail(), BIRD),
-    ("ellipse", (128, 128, 17, 34), BIRD),                              # body
+    ("ellipse", (128, 124, 17, 31), BIRD),                              # body
     *polys([foot(123.5, 8), foot(132.5, -8)], FEET),
     ("poly", head(), HEAD),
     ("poly", beak(), BEAK),
