@@ -60,7 +60,11 @@ body.popout #side, body.popout #split { display: none; }
 .fname .tail { flex: none; white-space: pre; }
 .row.noview .fname { color: var(--muted); }
 .root > .row { font-weight: 600; margin-top: 2px; }
-.root > .row .full { font-weight: 400; color: var(--muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
+/* A root's name keeps its room; its path gives way first, losing its start (the end, nearest
+   the folder, is the telling part). */
+.root > .row > .name:not(.full) { flex: 0 0 auto; max-width: 75%; }
+.root > .row .full { font-weight: 400; color: var(--muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0; flex: 0 1 auto; direction: rtl; text-align: left; }
 .row .x { margin-left: auto; visibility: hidden; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 14px; }
 .root > .row:hover .x { visibility: visible; }
 .row .x:hover { color: var(--fg); }
@@ -270,7 +274,7 @@ function makeNode(path, name, dir, depth, isRoot, synth) {
   if (isRoot) {
     const full = document.createElement("span");
     full.className = "full name";
-    full.textContent = path;
+    full.textContent = "\u200e" + path + "\u200e"; // marks keep the path in order under rtl
     const x = document.createElement("button");
     x.className = "x";
     x.title = "Remove this folder from the list";
