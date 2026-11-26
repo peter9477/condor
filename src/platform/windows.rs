@@ -82,6 +82,12 @@ pub fn allow_foreground(pid: u32) {
     }
 }
 
+/// The icon linked into the exe (assets/condor.res), for title bars and the taskbar.
+pub fn app_icon() -> Option<tao::window::Icon> {
+    use tao::platform::windows::IconExtWindows;
+    tao::window::Icon::from_resource(1, None).ok()
+}
+
 pub fn config_dir() -> PathBuf {
     std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join("Condor")
 }

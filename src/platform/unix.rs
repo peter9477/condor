@@ -58,6 +58,10 @@ fn xdg(var: &str, default: &str) -> PathBuf {
 
 pub fn allow_foreground(_pid: u32) {}
 
+pub fn app_icon() -> Option<tao::window::Icon> {
+    None
+}
+
 pub fn config_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
         home().join("Library/Application Support/Condor")

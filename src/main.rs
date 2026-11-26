@@ -50,6 +50,8 @@ const DIVIDER: f64 = 5.0;
 
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 const SCROLL_POLL: Duration = Duration::from_millis(1500);
+/// How often open folders are checked for added or removed entries.
+const DIR_CHECK: Duration = Duration::from_secs(3);
 
 const UI_HTML: &str = include_str!("../ui/index.html");
 const PICKER_HTML: &str = include_str!("../ui/picker.html");
@@ -207,6 +209,11 @@ struct App {
     /// Global settings, and the settings file's signature when last read or written.
     settings: state::Settings,
     settings_sig: watch::Sig,
+    /// Open folders' modification times (they change when entries come or go), checked on a
+    /// worker thread; one check at a time.
+    dir_times: Arc<std::sync::Mutex<HashMap<String, std::time::SystemTime>>>,
+    dir_check: Arc<std::sync::atomic::AtomicBool>,
+    next_dir_check: Instant,
 }
 
 fn log(msg: &str) {
@@ -268,7 +275,7 @@ fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<
 
 /// Build a top-level window, restoring its geometry if it is still on a connected monitor.
 fn build_window(target: &EventLoopWindowTarget<UserEvent>, geom: Option<state::WinGeom>, default: LogicalSize<f64>) -> Window {
-    let mut wb = WindowBuilder::new().with_title("Condor").with_inner_size(default);
+    let mut wb = WindowBuilder::new().with_title("Condor").with_inner_size(default).with_window_icon(platform::app_icon());
     if let Some(g) = geom {
         let on_screen = target.available_monitors().any(|m| {
             let (mp, ms) = (m.position(), m.size());
@@ -1237,6 +1244,55 @@ impl App {
         }
     }
 
+    /// Folders showing their contents in the tree: roots and expanded folders whose
+    /// ancestors (up to their root) are all expanded.
+    fn open_dirs(&self) -> Vec<String> {
+        let ex = &self.st.expanded;
+        let mut out = Vec::new();
+        for d in ex {
+            let Some(root) = self.st.roots.iter().find(|r| platform::is_under(d, r)) else { continue };
+            let mut p = std::path::Path::new(d);
+            let mut shown = true;
+            while platform::path_key(&p.to_string_lossy()) != platform::path_key(root) {
+                match p.parent() {
+                    Some(q) => p = q,
+                    None => break,
+                }
+                if !ex.contains(&*p.to_string_lossy()) {
+                    shown = false;
+                    break;
+                }
+            }
+            if shown {
+                out.push(d.clone());
+            }
+        }
+        out
+    }
+
+    /// Re-list open folders whose contents changed on disk (by their modification time).
+    fn check_dirs(&mut self) {
+        use std::sync::atomic::Ordering;
+        if self.dir_check.swap(true, Ordering::SeqCst) {
+            return; // the last check is still going (a slow share)
+        }
+        let dirs = self.open_dirs();
+        let (times, busy, filters, proxy) = (self.dir_times.clone(), self.dir_check.clone(), self.filters.clone(), self.proxy.clone());
+        std::thread::spawn(move || {
+            let mut seen = HashMap::new();
+            for d in dirs {
+                let Ok(t) = std::fs::metadata(&d).and_then(|m| m.modified()) else { continue };
+                let before = times.lock().unwrap().get(&d).copied();
+                if before.map_or(false, |b| b != t) {
+                    list_dir(d.clone(), filters.clone(), proxy.clone());
+                }
+                seen.insert(d, t);
+            }
+            *times.lock().unwrap() = seen;
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
+
     fn poll_scroll(&mut self) {
         self.next_poll = Instant::now() + SCROLL_POLL;
         for (id, p) in &self.panes {
@@ -1336,6 +1392,9 @@ impl App {
             update_ready: false,
             restart_at: None,
             settings_sig: watch::signature(&state::settings_file().to_string_lossy()),
+            dir_times: Default::default(),
+            dir_check: Default::default(),
+            next_dir_check: Instant::now() + DIR_CHECK,
             settings,
             st,
         };
@@ -1438,11 +1497,15 @@ impl App {
             self.poll_scroll();
             self.check_settings();
         }
+        if now >= self.next_dir_check {
+            self.next_dir_check = now + DIR_CHECK;
+            self.check_dirs();
+        }
         if self.save_at.map_or(false, |t| now >= t) {
             self.save_now();
         }
         self.show_loading(now);
-        let mut wake = self.next_poll;
+        let mut wake = self.next_poll.min(self.next_dir_check);
         for p in self.panes.values() {
             if let (Some(t), false) = (p.loading, p.loading_shown) {
                 wake = wake.min(t);
@@ -1525,6 +1588,7 @@ impl Starter {
         }
         let window = WindowBuilder::new()
             .with_title("Condor")
+            .with_window_icon(platform::app_icon())
             .with_inner_size(LogicalSize::new(640.0, 500.0))
             .build(target)
             .expect("create window");
