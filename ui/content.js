@@ -94,19 +94,28 @@
     var source = /(^|&)source(&|$)/.test(location.search.slice(1));
     location.href = location.pathname + (source ? "" : "?source");
   }, true);
-  // Left/Right page back and forward: a page at a time in documents that have pages (they
-  // set __condorPage), else a screenful, unless the document scrolls sideways.
+  // Left/Right and Ctrl+PgUp/PgDn page back and forward: a page at a time in documents that
+  // have pages (they set __condorPage), else a screenful (Left/Right not when the document
+  // scrolls sideways).
   window.addEventListener("keydown", function (e) {
-    if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    if (e.altKey || e.metaKey || e.shiftKey) return;
+    var arrow = !e.ctrlKey && (e.key === "ArrowLeft" || e.key === "ArrowRight");
+    var page = e.ctrlKey && (e.key === "PageUp" || e.key === "PageDown");
+    if (!arrow && !page) return;
     var t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    var dir = e.key === "ArrowRight" ? 1 : -1;
+    var dir = e.key === "ArrowRight" || e.key === "PageDown" ? 1 : -1;
     if (window.__condorPage) { e.preventDefault(); window.__condorPage(dir); return; }
     var el = document.scrollingElement || document.documentElement;
-    if (el.scrollWidth > el.clientWidth + 2) return;
+    if (arrow && el.scrollWidth > el.clientWidth + 2) return;
     e.preventDefault();
     window.scrollBy({ top: dir * Math.max(40, window.innerHeight - 40), behavior: "instant" });
   }, true);
+  // Esc returns the keyboard to the tree (Enter there comes back without reloading).
+  window.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    fetch("/__condor/tree").catch(function () {});
+  });
   window.addEventListener("scroll", saveSoon, { passive: true });
   document.addEventListener("selectionchange", saveSoon);
   window.addEventListener("pagehide", save);

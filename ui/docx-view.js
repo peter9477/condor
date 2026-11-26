@@ -110,7 +110,7 @@ function contents(root) {
   head.textContent = "Contents";
   const close = document.createElement("button");
   close.textContent = "\u00d7";
-  close.title = "Close (Esc)";
+  close.title = "Close";
   head.append(close);
   panel.append(head);
   const items = hs.map((h) => {
@@ -149,7 +149,6 @@ function contents(root) {
   };
   btn.onclick = () => show(panel.hidden);
   close.onclick = () => show(false);
-  addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) show(false); });
   addEventListener("scroll", mark, {passive: true});
   document.body.append(panel, btn);
   let saved = null;

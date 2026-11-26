@@ -1358,6 +1358,12 @@ window.condor = {
         renderRoots();
         break;
       case "list": onList(msg); break;
+      case "focusTree": {
+        // Esc in a document: the keyboard back in the tree, at the file being viewed.
+        if (!cursor && selected && nodes.get(selected)) setCursor(nodes.get(selected), true);
+        tree.focus();
+        break;
+      }
       case "results": onResults(msg); break;
       case "selected": select(msg.path); break;
       case "banner": onBanner(msg); break;

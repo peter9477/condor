@@ -51,8 +51,10 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   the keyboard cursor. The chips above the tree filter it to items with any of the chosen
   tags, plus the folders leading to them. Tags are kept per environment, by path.
 - Opening a file from the tree (click, Enter, a search result) puts the keyboard in the
-  document. There, Left/Right page back and forward: a page at a time in the built-in Word
-  view, else a screenful (unless the document scrolls sideways).
+  document, and Esc puts it back in the tree; Enter on the file already showing just goes
+  back to it (no reload), so Enter and Esc switch between the two. In a document, Left/Right
+  and Ctrl+PgUp/PgDn page back and forward: a page at a time in the built-in Word view,
+  else a screenful (Left/Right not when the document scrolls sideways).
 - Hiding: right-click → Hide (or "Hidden" in a document's # box) takes a file or folder out
   of the tree and out of search results, e.g. old revisions. The ⊘ N hidden chip above the
   tree shows them again, dimmed, until clicked again, so they can be unhidden.

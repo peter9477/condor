@@ -162,6 +162,10 @@ fn respond(status: StatusCode, ctype: &str, csp: Option<&str>, body: Vec<u8>) ->
     b.body(Cow::Owned(body)).unwrap()
 }
 
+pub fn no_content() -> Resp {
+    respond(StatusCode::NO_CONTENT, "text/plain", None, Vec::new())
+}
+
 pub fn escape(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 16);
     for c in s.chars() {

@@ -83,6 +83,8 @@ enum UserEvent {
     ContentNav(PaneId, String),
     /// A pane finished loading this URL.
     PageLoaded(PaneId, String),
+    /// Esc in a document: put the keyboard back in the tree.
+    FocusTree(PaneId),
     /// Polled view state of a pane: (url, scroll y, selection).
     Scroll(PaneId, String, f64, serde_json::Value),
     /// A document asked to open a local file in a new window ("Open link in new window",
@@ -370,6 +372,7 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
     let w_nav = watcher.clone();
     let (p_nav, p_load, p_new, p_focus) = (proxy.clone(), proxy.clone(), proxy.clone(), proxy.clone());
     let p_redirect = proxy.clone();
+    let p_tree = proxy.clone();
     let file_origin = paths::file_origin();
     let fo2 = file_origin.clone();
     let start = format!("{}://localhost{}", paths::FILE_SCHEME, url.strip_prefix(&file_origin).unwrap_or("/"));
@@ -377,6 +380,12 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
         .with_url(start)
         .with_asynchronous_custom_protocol(paths::FILE_SCHEME.into(), move |_id, req, responder| {
             let uri = req.uri().clone();
+            // ui/content.js asks for the tree (Esc); not a file.
+            if uri.path() == "/__condor/tree" {
+                let _ = p_tree.send_event(UserEvent::FocusTree(id));
+                responder.respond(render::no_content());
+                return;
+            }
             let w = w_serve.clone();
             std::thread::spawn(move || {
                 if let Some(p) = paths::url_path_to_path(uri.path()) {
@@ -849,8 +858,12 @@ impl App {
                 let focused = self.shells.get(&self.main).map(|s| s.focused);
                 if let Some(p) = focused.and_then(|f| self.panes.get(&f)) {
                     debug(|| format!("open {path}"));
-                    let _ = p.content.load_url(&self.url_for(&path));
-                    // Opened from the tree (click, Enter, a search result): keys go to the document.
+                    // Already showing it: just hand it the keyboard (Enter/Esc go back and forth).
+                    if p.current.as_deref() != Some(path.as_str()) {
+                        let _ = p.content.load_url(&self.url_for(&path));
+                    }
+                    // Opened from the tree (click, Enter, a search result): keys go to the document
+                    // (the Windows previewer, if showing, is its own window and keeps its keys).
                     let _ = p.content.focus();
                 }
             }
@@ -1633,6 +1646,14 @@ impl App {
                 }
                 UserEvent::ContentNav(id, url) => self.on_content_nav(id, &url),
                 UserEvent::PageLoaded(id, url) => self.on_page_loaded(id, &url),
+                UserEvent::FocusTree(id) => {
+                    // The tree is in the main window; a pop-out's document goes to its window's bar.
+                    let wid = self.panes.get(&id).map(|p| p.shell);
+                    if let Some(sh) = wid.filter(|w| *w == self.main).and_then(|w| self.shells.get(&w)) {
+                        let _ = sh.ui.focus();
+                        self.send_main(&json!({"ev": "focusTree"}));
+                    }
+                }
                 UserEvent::Scroll(id, url, y, sel) => self.on_scroll(id, &url, y, sel),
                 UserEvent::FileChanged(id, p, deleted) => self.on_file_changed(id, &p, deleted),
                 UserEvent::ReloadAt(id, url, y) => self.on_reload_at(id, &url, y),
