@@ -54,6 +54,11 @@ body.popout #side, body.popout #split { display: none; }
 #tree:focus .row.cursor { border-color: var(--cursor); }
 .tw { width: 16px; flex: none; text-align: center; color: var(--muted); font-size: 10px; }
 .name { overflow: hidden; text-overflow: ellipsis; }
+/* File names shrink in the middle: the end of the name and its extension stay visible. */
+.fname { display: flex; min-width: 0; }
+.fname .stem { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.fname .tail { flex: none; white-space: pre; }
+.row.noview .fname { color: var(--muted); }
 .root > .row { font-weight: 600; margin-top: 2px; }
 .root > .row .full { font-weight: 400; color: var(--muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
 .row .x { margin-left: auto; visibility: hidden; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 14px; }
@@ -89,6 +94,27 @@ body.popout #side, body.popout #split { display: none; }
 #bar #update { width: auto; padding: 0 8px; font-size: 12px; background: #1f883d; color: #fff; border-radius: 12px; margin-right: 4px; }
 #bar #update:hover { background: #1a7f37; }
 .dragover > .row { box-shadow: inset 0 2px 0 var(--cursor); }
+#bar #gear svg { display: block; margin: auto; }
+/* Tags: badges on tree rows, the filter bar, the tag editor. Each tag gets a hue from its name. */
+.tag { flex: none; margin-left: 5px; padding: 0 6px; border-radius: 8px; font-size: 11px; line-height: 16px;
+  background: hsl(var(--h) 70% 90%); color: hsl(var(--h) 60% 28%); }
+@media (prefers-color-scheme: dark) { .tag { background: hsl(var(--h) 35% 24%); color: hsl(var(--h) 70% 82%); } }
+.star { flex: none; margin-left: 5px; color: #d4a017; }
+#tagbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+#tagbar .tag { margin: 0; cursor: pointer; line-height: 20px; padding: 0 8px; border: 1px solid transparent; opacity: .75; }
+#tagbar .tag.on { border-color: currentColor; opacity: 1; font-weight: 600; }
+#tagbar .clear { margin: 0; border: 0; background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 11px; }
+#tagbar .clear:hover { color: var(--fg); }
+#tagbox { position: fixed; z-index: 11; width: 230px; padding: 8px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.18); display: flex; flex-direction: column; gap: 3px; }
+#tagbox .tb-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px; }
+#tagbox label { display: flex; align-items: center; gap: 6px; }
+#tagbox .tb-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
+#tagbox .tb-new { margin-top: 4px; font: inherit; padding: 3px 6px; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; user-select: text; }
+#menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+.pbar .b-star.on { color: #d4a017; background: none; }
+.pbar .b-tags { font-size: 13px; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -98,7 +124,7 @@ body.popout #side, body.popout #split { display: none; }
     <span class="spacer"></span>
     <button id="filter" title="Filters: hidden files, file types, exclusions">&#x29e9;</button>
     <button id="add" title="Add a folder (root)">+</button>
-    <button id="gear" title="Settings (shared by all Condor windows)">&#x2699;</button>
+    <button id="gear" title="Settings (shared by all Condor windows)"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><mask id="gear-hole"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="12" r="3.2" fill="#000"/></mask><g fill="currentColor" mask="url(#gear-hole)"><circle cx="12" cy="12" r="7.2"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(45 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(90 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(135 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(180 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(225 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(270 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(315 12 12)"/></g></svg></button>
   </div>
   <div id="fpanel" class="hidden">
     <label><input type="checkbox" id="f-hidden"> Show hidden files (dot files)</label>
@@ -118,16 +144,20 @@ body.popout #side, body.popout #split { display: none; }
     <div class="fnote">Shared by all Condor windows.</div>
     <div class="fbtns"><button id="s-apply">Apply</button></div>
   </div>
+  <div id="tagbar" class="hidden"></div>
   <div id="tree" tabindex="0"></div>
 </div>
 <div id="split"></div>
 <div id="panes"></div>
 <div id="pdiv" class="hidden"></div>
 <div id="menu" class="hidden">
-  <button id="m-other">Open in other pane</button>
-  <button id="m-window">Open in new window</button>
-  <button id="m-open">Open in default app</button>
-  <button id="m-openwith">Open with&#x2026;</button>
+  <button id="m-star">Star</button>
+  <button id="m-tags">Tags&#x2026;</button>
+  <hr class="m-file">
+  <button id="m-other" class="m-file">Open in other pane</button>
+  <button id="m-window" class="m-file">Open in new window</button>
+  <button id="m-open" class="m-file">Open in default app</button>
+  <button id="m-openwith" class="m-file">Open with&#x2026;</button>
 </div>
 <template id="pane-tpl">
   <div class="pgroup">
@@ -136,6 +166,8 @@ body.popout #side, body.popout #split { display: none; }
       <button class="b-back" title="Back (Alt+Left)">&#x2190;</button>
       <button class="b-fwd" title="Forward (Alt+Right)">&#x2192;</button>
       <span class="pname"></span>
+      <button class="b-star" title="Star this file">&#x2606;</button>
+      <button class="b-tags" title="Tags">#</button>
       <button class="b-src hidden" title="View source (Ctrl+U)">&lt;/&gt;</button>
       <button class="b-auto" title="Reload this file automatically when it changes">AUTO</button>
       <button class="b-reload" title="Reload (F5)">&#x21bb;</button>
@@ -153,6 +185,12 @@ body.popout #side, body.popout #split { display: none; }
     </div>
   </div>
 </template>
+<div id="tagbox" class="hidden">
+  <div class="tb-title"></div>
+  <label><input type="checkbox" class="tb-star"> <span class="star" style="margin:0">&#x2605;</span> Starred</label>
+  <div class="tb-list"></div>
+  <input class="tb-new" placeholder="New tag, then Enter" spellcheck="false">
+</div>
 <script>
 "use strict";
 const post = (o) => window.ipc.postMessage(JSON.stringify(o));
@@ -171,10 +209,11 @@ function baseName(p) {
   return i >= 0 ? t.slice(i + 1) || t : t;
 }
 
-function makeNode(path, name, dir, depth, isRoot) {
+function makeNode(path, name, dir, depth, isRoot, synth) {
   const n = document.createElement("div");
   n.className = "node" + (isRoot ? " root" : "");
   n.dataset.path = path;
+  if (synth) n.dataset.synth = "1";   // a folder on the way to tagged items (filtered tree)
   n.dataset.dir = dir ? "1" : "";
   n.dataset.depth = depth;
   const row = document.createElement("div");
@@ -186,7 +225,17 @@ function makeNode(path, name, dir, depth, isRoot) {
   tw.textContent = dir ? "▸" : "";
   const nm = document.createElement("span");
   nm.className = "name";
-  nm.textContent = name;
+  if (dir) nm.textContent = name;
+  else {
+    // Keep the extension and the few characters before it whole (e.g. "…dec v2.xlsx").
+    const dot = name.lastIndexOf(".");
+    const cut = Math.max(0, (dot > 0 ? dot : name.length) - 6);
+    const stem = document.createElement("span"), tail = document.createElement("span");
+    stem.className = "stem"; stem.textContent = name.slice(0, cut);
+    tail.className = "tail"; tail.textContent = name.slice(cut);
+    nm.className = "name fname";
+    nm.append(stem, tail);
+  }
   row.append(tw, nm);
   if (isRoot) {
     const full = document.createElement("span");
@@ -203,9 +252,11 @@ function makeNode(path, name, dir, depth, isRoot) {
   n.append(row);
   if (dir) {
     const kids = document.createElement("div");
-    kids.className = "kids hidden";
+    kids.className = synth ? "kids" : "kids hidden";
     n.append(kids);
+    if (synth) tw.textContent = "▾";
   }
+  decorate(n);
   if (path === selected) {
     row.classList.add("sel");
     if (reveal) { reveal = false; setTimeout(() => { row.scrollIntoView({block: "center"}); setCursor(n, false); }, 0); }
@@ -223,6 +274,7 @@ function setOpen(n, open, user) {
   const kids = kidsOf(n);
   kids.classList.toggle("hidden", !open);
   rowOf(n).querySelector(".tw").textContent = open ? "▾" : "▸";
+  if (n.dataset.synth) return;   // holds only the tagged items, not a listing
   if (open) {
     if (!loaded.has(path) && !kids.firstChild) {
       const l = document.createElement("div");
@@ -288,7 +340,154 @@ function forget(n) {
   nodes.delete(n.dataset.path);
 }
 
+// ----- Tags and stars -------------------------------------------------------------------
+let tags = {};          // path -> {dir, tags: [...]}
+let tagFilter = [];     // the tree shows only items with any of these
+let STAR = "★";
+let showable = new Set();   // extensions Condor highlights (besides the viewable list)
+let treeMode = "all";
+function tagsOf(p) { const t = p && tags[p]; return t ? t.tags : []; }
+function hue(s) { let h = 7; for (const c of s) h = (h * 31 + c.codePointAt(0)) % 360; return h; }
+function tagEl(t) {
+  const b = document.createElement("span");
+  b.className = "tag";
+  b.textContent = t;
+  b.style.setProperty("--h", hue(t));
+  return b;
+}
+function allTags() {
+  const set = new Set();
+  for (const v of Object.values(tags)) for (const t of v.tags) if (t !== STAR) set.add(t);
+  return [...set].sort((a, b) => a.localeCompare(b, undefined, {sensitivity: "base"}));
+}
+function isViewable(name) {
+  // No extension (README, LICENSE) is usually text.
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return true;
+  const ext = name.slice(dot + 1).toLowerCase();
+  return showable.has(ext) || settings.viewable_exts.some((e) => e.trim().replace(/^\./, "").toLowerCase() === ext);
+}
+// Badges after a row's name, and the dimming of files Condor can't show.
+function decorate(n) {
+  const row = rowOf(n);
+  if (!row) return;
+  for (const b of row.querySelectorAll(":scope > .tag, :scope > .star")) b.remove();
+  if (!n.dataset.dir) row.classList.toggle("noview", !isViewable(baseName(n.dataset.path)));
+  const t = tagsOf(n.dataset.path);
+  if (!t.length) return;
+  const x = row.querySelector(":scope > .x");
+  const add = (el) => x ? row.insertBefore(el, x) : row.append(el);
+  if (t.includes(STAR)) {
+    const st = document.createElement("span");
+    st.className = "star"; st.textContent = STAR; st.title = "Starred";
+    add(st);
+  }
+  for (const tg of t) if (tg !== STAR) add(tagEl(tg));
+}
+function setTags(path, dir, list) { post({cmd: "setTags", path, dir: !!dir, tags: list}); }
+function toggleStar(path, dir) {
+  const t = tagsOf(path);
+  setTags(path, dir, t.includes(STAR) ? t.filter((x) => x !== STAR) : [...t, STAR]);
+}
+
+function renderTagbar() {
+  const bar = document.getElementById("tagbar");
+  const names = allTags();
+  const anyStar = Object.values(tags).some((v) => v.tags.includes(STAR));
+  bar.replaceChildren();
+  bar.classList.toggle("hidden", !names.length && !anyStar && !tagFilter.length);
+  const chip = (t, label) => {
+    const c = tagEl(label || t);
+    if (t === STAR) c.style.setProperty("--h", 45);
+    c.classList.toggle("on", tagFilter.includes(t));
+    c.title = tagFilter.includes(t) ? "Stop filtering by this" : "Show only items with this (or another selected) tag";
+    c.onclick = () => post({cmd: "tagFilter", tags: tagFilter.includes(t) ? tagFilter.filter((x) => x !== t) : [...tagFilter, t]});
+    bar.append(c);
+  };
+  if (anyStar) chip(STAR, STAR + " starred");
+  for (const t of names) chip(t);
+  if (tagFilter.length) {
+    const c = document.createElement("button");
+    c.className = "clear"; c.textContent = "show all";
+    c.onclick = () => post({cmd: "tagFilter", tags: []});
+    bar.append(c);
+  }
+}
+
+function onTags(msg) {
+  tags = msg.tags || {};
+  const oldFilter = tagFilter.join("\n");
+  tagFilter = msg.filter || [];
+  renderTagbar();
+  if (tagFilter.length || oldFilter !== tagFilter.join("\n")) renderRoots();
+  else for (const n of nodes.values()) decorate(n);
+  for (const id of paneEls.keys()) showPaneTags(id);
+  if (!tagbox.classList.contains("hidden")) fillTagbox();
+}
+
+// The tree filtered by tag: each root shows the folders leading to matching items. Matching
+// folders are ordinary folders (their full contents when opened).
+function renderTagged() {
+  const match = (p) => tagsOf(p).some((t) => tagFilter.includes(t));
+  const want = Object.keys(tags).filter(match).sort((a, b) => a.length - b.length);
+  const els = [];
+  for (const r of roots) {
+    const mine = want.filter((p) => isWithin(p, r));
+    if (!mine.length) continue;
+    if (mine.some((p) => keyOf(p) === keyOf(r))) {
+      const n = makeNode(r, baseName(r), true, 0, true);
+      if (expanded.has(r)) setOpen(n, true, false);
+      els.push(n);
+      continue;
+    }
+    const rn = makeNode(r, baseName(r), true, 0, true, true);
+    const sep = r.includes("\\") ? "\\" : "/";
+    for (const p of mine) {
+      const segs = p.slice(r.length).split(/[\\/]+/).filter(Boolean);
+      let cur = rn, curPath = r.replace(/[\\/]+$/, "");
+      for (let i = 0; i < segs.length; i++) {
+        const last = i === segs.length - 1;
+        const childPath = last ? p : curPath + sep + segs[i];
+        let c = [...kidsOf(cur).children].find((k) => keyOf(k.dataset.path) === keyOf(childPath));
+        if (c) { if (!c.dataset.synth) break; cur = c; curPath = childPath; continue; }   // inside a tagged folder
+        if (last) {
+          c = makeNode(p, baseName(p), tags[p].dir, i + 1, false);
+          if (c.dataset.dir && expanded.has(p)) setOpen(c, true, false);
+        } else c = makeNode(childPath, segs[i], true, i + 1, false, true);
+        kidsOf(cur).append(c);
+        cur = c; curPath = childPath;
+      }
+    }
+    const sortKids = (n) => {
+      const k = kidsOf(n);
+      const list = [...k.children].sort((a, b) => (!!b.dataset.dir - !!a.dataset.dir) ||
+        baseName(a.dataset.path).localeCompare(baseName(b.dataset.path), undefined, {sensitivity: "base"}));
+      k.replaceChildren(...list);
+      for (const c of list) if (c.dataset.synth) sortKids(c);
+    };
+    sortKids(rn);
+    els.push(rn);
+  }
+  tree.replaceChildren(...els);
+  if (!els.length) {
+    const e = document.createElement("div");
+    e.id = "empty";
+    e.textContent = "Nothing in these folders has the selected tags.";
+    tree.append(e);
+  }
+}
+
+function clearTree() {
+  for (const c of [...tree.children]) if (c.dataset && c.dataset.path) forget(c);
+  tree.replaceChildren();
+  cursor = null;
+}
+
 function renderRoots() {
+  const mode = tagFilter.length ? "tagged" : "all";
+  if (mode !== treeMode || mode === "tagged") clearTree();
+  treeMode = mode;
+  if (mode === "tagged") { renderTagged(); return; }
   const keep = new Map();
   for (const c of tree.children) if (c.dataset && c.dataset.path) keep.set(c.dataset.path, c);
   const els = [];
@@ -421,6 +620,7 @@ tree.addEventListener("keydown", (e) => {
       break;
     case "Enter": case " ": if (n) activate(n); break;
     case "F5": post({cmd: "reload"}); break;
+    case "*": if (n) toggleStar(n.dataset.path, !!n.dataset.dir); break;
     default: return;
   }
   e.preventDefault();
@@ -491,6 +691,13 @@ function paneEl(id) {
   q(".b-split").onclick = () => send("split");
   q(".b-pop").onclick = () => send("popOut");
   q(".b-close").onclick = () => send("closePane");
+  q(".b-star").onclick = () => { if (p.state.file) toggleStar(p.state.file, false); };
+  q(".b-tags").onclick = (e) => {
+    if (!p.state.file) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    openTagbox(p.state.file, false, r.left, r.bottom + 2);
+  };
+  q(".b-tags").addEventListener("mousedown", (e) => e.stopPropagation());   // don't close the box it opens
   q(".bb-reload").onclick = () => send("reload");
   q(".bb-auto").onclick = () => { if (p.state.file) post({cmd: "autoReload", path: p.state.file, on: true}); };
   q(".bb-close").onclick = () => send("dismiss");
@@ -550,8 +757,25 @@ function onPane(msg) {
   const auto = q(".b-auto");
   auto.disabled = !msg.file;
   auto.classList.toggle("on", !!msg.auto);
+  showPaneTags(msg.id);
   auto.title = msg.auto ? "This file reloads automatically when it changes (click to stop)"
                         : "Reload this file automatically when it changes";
+}
+
+function showPaneTags(id) {
+  const p = paneEls.get(id);
+  if (!p) return;
+  const f = p.state.file;
+  const t = tagsOf(f);
+  const star = p.group.querySelector(".b-star"), tg = p.group.querySelector(".b-tags");
+  star.disabled = tg.disabled = !f;
+  const on = t.includes(STAR);
+  star.classList.toggle("on", on);
+  star.textContent = on ? "\u2605" : "\u2606";
+  star.title = on ? "Starred (click to unstar)" : "Star this file";
+  const names = t.filter((x) => x !== STAR);
+  tg.classList.toggle("on", names.length > 0);
+  tg.title = names.length ? "Tags: " + names.join(", ") : "Tags";
 }
 
 function onHistory(msg) {
@@ -593,22 +817,80 @@ function onBanner(msg) {
   d.addEventListener("pointerup", (e) => { d.releasePointerCapture(e.pointerId); d.classList.remove("drag"); });
 }
 
-// Right-click a file in the tree: open it in another application.
-let menuPath = null;
+// The tag editor: star, existing tags as checkboxes, and a box for a new one.
+const tagbox = document.getElementById("tagbox");
+let tbPath = null, tbDir = false;
+function fillTagbox() {
+  const have = tagsOf(tbPath);
+  tagbox.querySelector(".tb-title").textContent = baseName(tbPath);
+  tagbox.querySelector(".tb-title").title = tbPath;
+  tagbox.querySelector(".tb-star").checked = have.includes(STAR);
+  const list = tagbox.querySelector(".tb-list");
+  list.replaceChildren();
+  for (const t of allTags()) {
+    const l = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = have.includes(t);
+    cb.onchange = () => {
+      const cur = tagsOf(tbPath);
+      setTags(tbPath, tbDir, cb.checked ? [...cur, t] : cur.filter((x) => x !== t));
+    };
+    l.append(cb, tagEl(t));
+    list.append(l);
+  }
+}
+function openTagbox(path, dir, x, y) {
+  tbPath = path; tbDir = dir;
+  fillTagbox();
+  tagbox.classList.remove("hidden");
+  const r = tagbox.getBoundingClientRect();
+  tagbox.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + "px";
+  tagbox.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + "px";
+  const input = tagbox.querySelector(".tb-new");
+  input.value = "";
+  input.focus();
+}
+function hideTagbox() { tagbox.classList.add("hidden"); }
+tagbox.querySelector(".tb-star").onchange = (e) => {
+  const cur = tagsOf(tbPath).filter((x) => x !== STAR);
+  setTags(tbPath, tbDir, e.target.checked ? [...cur, STAR] : cur);
+};
+tagbox.querySelector(".tb-new").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { hideTagbox(); return; }
+  if (e.key !== "Enter") return;
+  const t = e.target.value.trim().replace(/\s+/g, " ");
+  if (t && t !== STAR) {
+    const cur = tagsOf(tbPath);
+    if (!cur.includes(t)) setTags(tbPath, tbDir, [...cur, t]);
+  }
+  e.target.value = "";
+});
+document.addEventListener("mousedown", (e) => { if (!tagbox.contains(e.target)) hideTagbox(); });
+window.addEventListener("blur", hideTagbox);
+
+// Right-click an item in the tree: star or tag it; for files, open it elsewhere.
+let menuPath = null, menuDir = false;
 const menu = document.getElementById("menu");
 function hideMenu() { menu.classList.add("hidden"); }
 tree.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   const row = e.target.closest(".row");
   const n = row && row.parentElement;
-  if (!n || !n.classList.contains("node") || n.dataset.dir) { hideMenu(); return; }
+  if (!n || !n.classList.contains("node")) { hideMenu(); return; }
   menuPath = n.dataset.path;
-  document.getElementById("m-openwith").classList.toggle("hidden", !canOpenWith);
+  menuDir = !!n.dataset.dir;
+  for (const el of menu.querySelectorAll(".m-file")) el.classList.toggle("hidden", menuDir);
+  document.getElementById("m-openwith").classList.toggle("hidden", menuDir || !canOpenWith);
+  document.getElementById("m-star").textContent = tagsOf(menuPath).includes(STAR) ? "Unstar" : "Star";
+  menu.dataset.x = e.clientX; menu.dataset.y = e.clientY;
   menu.classList.remove("hidden");
   const r = menu.getBoundingClientRect();
   menu.style.left = Math.min(e.clientX, innerWidth - r.width - 4) + "px";
   menu.style.top = Math.min(e.clientY, innerHeight - r.height - 4) + "px";
 });
+document.getElementById("m-star").onclick = () => { hideMenu(); toggleStar(menuPath, menuDir); };
+document.getElementById("m-tags").onclick = () => { hideMenu(); openTagbox(menuPath, menuDir, +menu.dataset.x, +menu.dataset.y); };
 document.getElementById("m-open").onclick = () => { hideMenu(); post({cmd: "openExternal", path: menuPath, with: false}); };
 document.getElementById("m-other").onclick = () => { hideMenu(); post({cmd: "openOther", path: menuPath}); };
 document.getElementById("m-window").onclick = () => { hideMenu(); post({cmd: "popOut", path: menuPath}); };
@@ -699,7 +981,12 @@ window.condor = {
   recv(msg) {
     switch (msg.ev) {
       case "update": document.getElementById("update").classList.remove("hidden"); break;
-      case "settings": settings = msg.settings; if (spanel.classList.contains("hidden")) showSettings(); break;
+      case "settings":
+        settings = msg.settings;
+        if (spanel.classList.contains("hidden")) showSettings();
+        for (const n of nodes.values()) decorate(n);
+        break;
+      case "tags": onTags(msg); break;
       case "layout": onLayout(msg); break;
       case "pane": onPane(msg); break;
       case "history": onHistory(msg); break;
@@ -713,6 +1000,12 @@ window.condor = {
         filters = msg.filters; showFilter();
         canOpenWith = !!msg.openWith;
         settings = msg.settings; showSettings();
+        STAR = msg.star || STAR;
+        showable = new Set(msg.showable || []);
+        tags = msg.tags || {};
+        tagFilter = msg.tagFilter || [];
+        treeMode = "";
+        renderTagbar();
         lastDpr = devicePixelRatio;
         post({cmd: "sidebar", width: msg.sidebar, dpr: devicePixelRatio});
         renderRoots();

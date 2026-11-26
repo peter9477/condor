@@ -112,6 +112,10 @@ enum Cmd {
     OpenOther { path: String },
     /// The first pane's share of a split.
     PaneRatio { ratio: f64 },
+    /// Replace the tags on a file or folder (an empty list removes them).
+    SetTags { path: String, dir: bool, tags: Vec<String> },
+    /// Filter the tree to items with any of these tags (empty: no filter).
+    TagFilter { tags: Vec<String> },
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -601,6 +605,14 @@ impl App {
         }
     }
 
+    /// Every window shows tags (the tree's badges, the panes' star buttons).
+    fn send_tags(&self) {
+        let msg = json!({"ev": "tags", "tags": self.st.tags, "filter": self.st.tag_filter});
+        for w in self.shells.keys() {
+            self.send_ui(*w, &msg);
+        }
+    }
+
     fn init_message(&self, wid: WindowId) -> serde_json::Value {
         let kind = self.shells.get(&wid).map_or(Kind::Main, |s| s.kind);
         let selected = self.shells.get(&wid).and_then(|s| self.panes.get(&s.focused)).and_then(|p| p.current.clone());
@@ -616,6 +628,11 @@ impl App {
             "selected": selected.or_else(|| self.st.open_file.clone()),
             "sidebar": self.st.sidebar_width,
             "filters": self.filter_state(),
+            "tags": self.st.tags,
+            "tagFilter": self.st.tag_filter,
+            "star": state::STAR,
+            // Shown in full in the tree; other files are dimmed (Condor can't preview them).
+            "showable": highlight::extensions(),
         })
     }
 
@@ -822,6 +839,25 @@ impl App {
                         self.mark_dirty();
                     }
                 }
+            }
+            Cmd::SetTags { path, dir, tags } => {
+                let tags: std::collections::BTreeSet<String> = tags.iter().filter_map(|t| state::clean_tag(t)).collect();
+                if tags.is_empty() {
+                    self.st.tags.remove(&path);
+                } else {
+                    self.st.tags.insert(path, state::Tagged { dir, tags });
+                }
+                // Drop filter entries for tags nothing has any more.
+                let used = |t: &String| self.st.tags.values().any(|v| v.tags.contains(t));
+                let filter: Vec<String> = self.st.tag_filter.iter().filter(|t| used(t)).cloned().collect();
+                self.st.tag_filter = filter;
+                self.mark_dirty();
+                self.send_tags();
+            }
+            Cmd::TagFilter { tags } => {
+                self.st.tag_filter = tags;
+                self.mark_dirty();
+                self.send_tags();
             }
             Cmd::PaneRatio { ratio } => {
                 if ratio.is_finite() {

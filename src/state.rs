@@ -2,7 +2,7 @@
 //! `<config dir>/environments/<name>.json` (on Windows, %APPDATA%\Condor\environments).
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -52,6 +52,26 @@ pub struct EnvState {
     pub split_ratio: f64,
     /// Files popped out into their own windows (reopened on start).
     pub popouts: Vec<Popout>,
+    /// Tags on files and folders, by path. A star is the tag `STAR`.
+    pub tags: BTreeMap<String, Tagged>,
+    /// Tags the tree is filtered to (shows items with any of them); empty shows everything.
+    pub tag_filter: Vec<String>,
+}
+
+/// The tag that shows as a star.
+pub const STAR: &str = "\u{2605}";
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct Tagged {
+    pub dir: bool,
+    pub tags: BTreeSet<String>,
+}
+
+/// A tag as typed: trimmed, inner whitespace collapsed, at most 40 characters.
+pub fn clean_tag(t: &str) -> Option<String> {
+    let t: String = t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(40).collect();
+    (!t.is_empty()).then_some(t)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -83,6 +103,8 @@ impl Default for EnvState {
             split_side_by_side: true,
             split_ratio: 0.5,
             popouts: Vec::new(),
+            tags: BTreeMap::new(),
+            tag_filter: Vec::new(),
         }
     }
 }

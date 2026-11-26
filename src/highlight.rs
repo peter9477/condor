@@ -53,6 +53,20 @@ pub fn for_file(ext: &str, text: &str) -> Option<&'static SyntaxReference> {
     by_ext.or_else(by_line).and_then(usable)
 }
 
+/// File extensions that have a syntax (lowercase), plus the aliases `for_file` maps.
+pub fn extensions() -> Vec<String> {
+    let mut v: Vec<String> = syntaxes()
+        .syntaxes()
+        .iter()
+        .filter(|s| s.name != "Plain Text")
+        .flat_map(|s| s.file_extensions.iter().map(|e| e.to_ascii_lowercase()))
+        .collect();
+    v.extend(["svg", "xsd", "xsl", "xslt", "plist", "xhtml"].map(String::from));
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// Syntax for a Markdown code fence's language tag (`rust`, `py`, `c++`, ...).
 pub fn for_lang(lang: &str) -> Option<&'static SyntaxReference> {
     let lang = lang.split([',', ' ']).next().unwrap_or("").trim();

@@ -10,10 +10,13 @@ Ideas recorded for later; none of these are implemented yet.
 - More than two panes in a window.
 
 ## Tags and stars
-- Tag files and folders with short words, shown as badges in the tree; a star is a
-  special tag shown as ★. Stored by path in the environment state.
-- Filter the tree to one or more tags: tagged items plus the folders leading to them,
-  built from the stored paths, so no folder needs scanning.
+- Follow renames and moves (tags are stored by path, so a renamed file loses its tags).
+- Choose "any" or "all" when filtering by several tags (it's "any" now).
+
+## Previews of other formats
+- Office files (.xlsx/.xls, .docx/.doc, .vsdx/.vsd, .pptx): host the Windows preview
+  handlers Office installs (what Explorer's preview pane uses), or convert with
+  LibreOffice to PDF, or render spreadsheets to HTML with a pure-Rust reader.
 
 ## Environments and windows
 - Environment selector UI (state is already one file per environment; `--env NAME` works).
