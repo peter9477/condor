@@ -203,3 +203,5 @@ pub fn window_handle(_w: &tao::window::Window) -> isize {
 pub fn metafile_to_png(_bytes: &[u8]) -> Result<Vec<u8>, String> {
     Err("metafile pictures can only be shown on Windows".into())
 }
+
+pub fn tree_hotkey(_window: isize, _f: impl Fn(isize, bool) + Send + 'static) {}

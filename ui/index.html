@@ -1358,6 +1358,13 @@ window.condor = {
         renderRoots();
         break;
       case "list": onList(msg); break;
+      case "treeKey": {
+        // F6: from the tree to the document; from anywhere else (search box, a document, the
+        // PDF viewer...) to the tree.
+        const inTree = document.hasFocus() && tree.contains(document.activeElement);
+        post({cmd: inTree ? "focusDoc" : "focusTree"});
+        break;
+      }
       case "focusTree": {
         // Esc in a document: the keyboard back in the tree, at the file being viewed.
         if (!cursor && selected && nodes.get(selected)) setCursor(nodes.get(selected), true);

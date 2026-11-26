@@ -52,7 +52,11 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   tags, plus the folders leading to them. Tags are kept per environment, by path.
 - Opening a file from the tree (click, Enter, a search result) puts the keyboard in the
   document, and Esc puts it back in the tree; Enter on the file already showing just goes
-  back to it (no reload), so Enter and Esc switch between the two. In a document, Left/Right
+  back to it (no reload), so Enter and Esc switch between the two. F6 switches between the
+  tree and the document from anywhere, including the PDF view and Windows previewers (which
+  keep Esc to themselves) and documents in their own windows (each comes to the front);
+  Ctrl+Shift+E always goes to the tree. These keys are Condor's only while one of its
+  windows is active. In a document, Left/Right
   and Ctrl+PgUp/PgDn page back and forward: a page at a time in the built-in Word view,
   else a screenful (Left/Right not when the document scrolls sideways).
 - Hiding: right-click → Hide (or "Hidden" in a document's # box) takes a file or folder out

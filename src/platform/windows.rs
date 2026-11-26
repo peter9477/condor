@@ -516,3 +516,56 @@ pub fn metafile_to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
         std::result::Result::Ok(data)
     }
 }
+
+/// F6 (`f(window, true)`) and Ctrl+Shift+E (`f(window, false)`) in `window` (any of Condor's
+/// windows), whatever has the keyboard inside it: a document, the PDF viewer or a Windows
+/// previewer (which keep their keys to themselves). They are system hotkeys registered only
+/// while the window is active, so they never take the keys from other programs.
+pub fn tree_hotkey(window: isize, f: impl Fn(isize, bool) + Send + 'static) {
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, VK_F6};
+    use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, WM_ACTIVATE, WM_HOTKEY, WM_NCACTIVATE, WM_NCDESTROY};
+    const ID: i32 = 0xC0DE; // Ctrl+Shift+E
+    const ID_F6: i32 = 0xC0DF;
+    static CALL: std::sync::Mutex<Option<Box<dyn Fn(isize, bool) + Send>>> = std::sync::Mutex::new(None);
+    *CALL.lock().unwrap() = Some(Box::new(f));
+    fn set(h: HWND, on: bool) {
+        unsafe {
+            // Activation arrives as both WM_ACTIVATE and WM_NCACTIVATE: start clean each time.
+            let _ = UnregisterHotKey(Some(h), ID);
+            let _ = UnregisterHotKey(Some(h), ID_F6);
+            if on {
+                let a = RegisterHotKey(Some(h), ID, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'E' as u32);
+                let b = RegisterHotKey(Some(h), ID_F6, MOD_NOREPEAT, VK_F6.0 as u32);
+                if a.is_err() || b.is_err() {
+                    crate::debug(|| format!("hotkeys on {:?}: {:?} {:?}", h.0, a.map_err(|e| e.to_string()), b.map_err(|e| e.to_string())));
+                }
+            }
+        }
+    }
+    unsafe extern "system" fn proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        match msg {
+            // The window becoming active or inactive (WM_ACTIVATE doesn't always reach here;
+            // WM_NCACTIVATE does).
+            WM_ACTIVATE => set(h, (wp.0 & 0xFFFF) != 0), // WA_INACTIVE is 0
+            WM_NCACTIVATE => set(h, wp.0 != 0),
+            WM_HOTKEY if wp.0 as i32 == ID || wp.0 as i32 == ID_F6 => {
+                if let Some(f) = CALL.lock().unwrap().as_ref() {
+                    f(h.0 as isize, wp.0 as i32 == ID_F6);
+                }
+                return LRESULT(0);
+            }
+            WM_NCDESTROY => set(h, false),
+            _ => {}
+        }
+        unsafe { DefSubclassProc(h, msg, wp, lp) }
+    }
+    let h = HWND(window as *mut _);
+    unsafe {
+        let _ = SetWindowSubclass(h, Some(proc), 0xC0DE, 0);
+        if GetForegroundWindow() == h {
+            set(h, true);
+        }
+    }
+}

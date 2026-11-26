@@ -85,6 +85,8 @@ enum UserEvent {
     PageLoaded(PaneId, String),
     /// Esc in a document: put the keyboard back in the tree.
     FocusTree(PaneId),
+    /// F6 (true: tree <-> document) or Ctrl+Shift+E (false: to the tree) in a window (its handle).
+    TreeKey(isize, bool),
     /// Polled view state of a pane: (url, scroll y, selection).
     Scroll(PaneId, String, f64, serde_json::Value),
     /// A document asked to open a local file in a new window ("Open link in new window",
@@ -151,6 +153,9 @@ enum Cmd {
     /// Show the pane's Office file with the Windows previewer or LibreOffice.
     /// Show the pane's Office file with `mode`: for its whole type, or (`file`) for it alone.
     OfficeView { pane: Option<PaneId>, mode: String, #[serde(default)] file: bool },
+    /// F6 from the tree: the keyboard to the document; from elsewhere, to the tree.
+    FocusDoc,
+    FocusTree,
     /// Replace the tags on a file or folder (an empty list removes them).
     SetTags { path: String, dir: bool, tags: Vec<String> },
     /// Filter the tree to items with any of these tags (empty: no filter).
@@ -203,6 +208,8 @@ struct Pane {
 }
 
 struct App {
+    /// The pop-out F6 last came from, for F6 in the tree to return to.
+    f6_back: Option<WindowId>,
     env: envs::Env,
     /// Writes the state file off the UI thread (it may be on a slow share).
     saver: envs::Saver,
@@ -601,6 +608,13 @@ impl App {
     fn create_shell(&mut self, target: &EventLoopWindowTarget<UserEvent>, kind: Kind, geom: Option<state::WinGeom>) -> WindowId {
         let default = if kind == Kind::Main { LogicalSize::new(1200.0, 800.0) } else { LogicalSize::new(900.0, 800.0) };
         let window = build_window(target, geom, default);
+        if kind != Kind::Main {
+            // F6 / Ctrl+Shift+E in a pop-out: to the main window's tree (see TreeKey).
+            let p = self.proxy.clone();
+            platform::tree_hotkey(platform::window_handle(&window), move |h, toggle| {
+                let _ = p.send_event(UserEvent::TreeKey(h, toggle));
+            });
+        }
         let ui = build_ui(&mut self.ctx, &window, &self.proxy, kind);
         let wid = window.id();
         self.shells.insert(wid, Shell { kind, ui, window, ui_dpr: None, panes: Vec::new(), focused: 0 });
@@ -854,10 +868,25 @@ impl App {
                 }
             }
             Cmd::List { path } => list_dir(path, self.filters.clone(), self.proxy.clone()),
+            Cmd::FocusDoc => {
+                // F6 from the tree: back to the pop-out F6 came from, if any (to the front),
+                // else to the document in the main window's focused pane.
+                let back = self.f6_back.filter(|w| self.shells.contains_key(w)).unwrap_or(self.main);
+                if let Some(sh) = self.shells.get(&back) {
+                    if back != self.main {
+                        sh.window.set_focus();
+                    }
+                    if let Some(p) = self.panes.get(&sh.focused) {
+                        let _ = p.content.focus();
+                    }
+                }
+            }
+            Cmd::FocusTree => self.focus_tree(false),
             Cmd::Open { path } => {
                 let focused = self.shells.get(&self.main).map(|s| s.focused);
                 if let Some(p) = focused.and_then(|f| self.panes.get(&f)) {
                     debug(|| format!("open {path}"));
+                    self.f6_back = None; // F6 from the tree now means this document
                     // Already showing it: just hand it the keyboard (Enter/Esc go back and forth).
                     if p.current.as_deref() != Some(path.as_str()) {
                         let _ = p.content.load_url(&self.url_for(&path));
@@ -1580,7 +1609,16 @@ impl App {
         // The main window comes first so its id is known; the shell map gets it right after.
         let main_window = build_window(target, st.window, LogicalSize::new(1200.0, 800.0));
         let main = main_window.id();
+        // F6 (tree <-> document) and Ctrl+Shift+E (to the tree) from anywhere in the window
+        // (Esc only works where Condor's script runs, not in the PDF viewer or a Windows previewer).
+        {
+            let p = proxy.clone();
+            platform::tree_hotkey(platform::window_handle(&main_window), move |h, toggle| {
+                let _ = p.send_event(UserEvent::TreeKey(h, toggle));
+            });
+        }
         let mut app = App {
+            f6_back: None,
             env,
             saver: envs::Saver::start(),
             proxy,
@@ -1646,12 +1684,30 @@ impl App {
                 }
                 UserEvent::ContentNav(id, url) => self.on_content_nav(id, &url),
                 UserEvent::PageLoaded(id, url) => self.on_page_loaded(id, &url),
+                UserEvent::TreeKey(h, toggle) => {
+                    let from = self.shells.iter().find(|(_, s)| platform::window_handle(&s.window) == h).map(|(w, _)| *w);
+                    match from {
+                        // In a pop-out: to the main window's tree, remembering the pop-out for
+                        // F6 back.
+                        Some(w) if w != self.main => {
+                            self.f6_back = Some(w);
+                            self.focus_tree(true);
+                        }
+                        // The page knows whether the tree has the keyboard; F6 from there goes
+                        // to the document (it posts focusDoc).
+                        Some(_) if toggle => self.send_main(&json!({"ev": "treeKey"})),
+                        Some(_) => self.focus_tree(false),
+                        None => {}
+                    }
+                }
                 UserEvent::FocusTree(id) => {
-                    // The tree is in the main window; a pop-out's document goes to its window's bar.
-                    let wid = self.panes.get(&id).map(|p| p.shell);
-                    if let Some(sh) = wid.filter(|w| *w == self.main).and_then(|w| self.shells.get(&w)) {
-                        let _ = sh.ui.focus();
-                        self.send_main(&json!({"ev": "focusTree"}));
+                    // Esc in a document. From a pop-out, the main window comes forward (and F6
+                    // in the tree goes back to the pop-out).
+                    if let Some(w) = self.panes.get(&id).map(|p| p.shell) {
+                    if w != self.main {
+                        self.f6_back = Some(w);
+                    }
+                    self.focus_tree(w != self.main);
                     }
                 }
                 UserEvent::Scroll(id, url, y, sel) => self.on_scroll(id, &url, y, sel),
@@ -1736,6 +1792,17 @@ impl App {
             wake = wake.min(t);
         }
         *control_flow = ControlFlow::WaitUntil(wake);
+    }
+
+    /// The keyboard to the main window's tree (`raise`: bring the window to the front first).
+    fn focus_tree(&self, raise: bool) {
+        if let Some(sh) = self.shells.get(&self.main) {
+            if raise {
+                sh.window.set_focus();
+            }
+            let _ = sh.ui.focus();
+            self.send_main(&json!({"ev": "focusTree"}));
+        }
     }
 
     /// Reopen previews whose pane changed size (once resizing has paused), so they lay out
