@@ -917,11 +917,30 @@ impl App {
                 let Some(id) = self.pane_of(wid, pane) else { return };
                 let Some(file) = self.panes[&id].current.clone() else { return };
                 let proxy = self.proxy.clone();
-                let selected = move |sel: String, proxy: EventLoopProxy<UserEvent>, file: String| {
+                // The selection (as rich text and plain text), else a rendered document's
+                // whole body, else the file's text, else the file itself.
+                // Links to local files and local images mean nothing once pasted elsewhere:
+                // they become their text (web and mail links stay).
+                const JS: &str = "(() => { const s = window.getSelection ? getSelection() : null; \
+                    const div = document.createElement('div'); let whole = false; \
+                    if (s && s.rangeCount && String(s)) { for (let i = 0; i < s.rangeCount; i++) div.append(s.getRangeAt(i).cloneContents()); } \
+                    else if (document.body && document.body.classList.contains('markdown-body') && !location.search.includes('source')) \
+                      { div.innerHTML = document.body.innerHTML; whole = true; } \
+                    else return {}; \
+                    const text = whole ? document.body.innerText : String(s); \
+                    const local = (u) => { try { const x = new URL(u, location.href); \
+                      return !/^(https?|mailto):$/.test(x.protocol) || x.host === location.host; } catch (e) { return true; } }; \
+                    for (const a of div.querySelectorAll('a[href]')) if (local(a.getAttribute('href'))) a.replaceWith(...a.childNodes); \
+                    for (const im of div.querySelectorAll('img[src]')) if (local(im.getAttribute('src'))) im.replaceWith(im.alt || ''); \
+                    return {html: div.innerHTML, text, whole}; })()";
+                let copy = move |got: serde_json::Value, proxy: EventLoopProxy<UserEvent>, file: String| {
                     // On a worker thread: reading the file may be slow.
                     std::thread::spawn(move || {
-                        let (ok, what) = if !sel.is_empty() {
-                            (platform::clipboard_text(&sel), "Copied the selection")
+                        let html = got["html"].as_str().unwrap_or_default();
+                        let text = got["text"].as_str().unwrap_or_default();
+                        let (ok, what) = if !html.is_empty() || !text.is_empty() {
+                            let what = if got["whole"] == true { "Copied the page" } else { "Copied the selection" };
+                            (platform::clipboard_html(html, text), what)
                         } else if let Some(text) = text_of_file(&file) {
                             (platform::clipboard_text(&text), "Copied the text")
                         } else {
@@ -934,12 +953,16 @@ impl App {
                 };
                 let p = &self.panes[&id];
                 if p.preview.is_some() {
-                    selected(String::new(), proxy, file);
+                    copy(serde_json::Value::Null, proxy, file);
                 } else {
-                    let _ = p.content.evaluate_script_with_callback("String(window.getSelection ? getSelection() : '')", move |r| {
-                        let sel: String = serde_json::from_str(&r).unwrap_or_default();
-                        selected(sel, proxy.clone(), file.clone());
+                    debug(|| "copy pane".to_string());
+                    let res = p.content.evaluate_script_with_callback(JS, move |r| {
+                        debug(|| format!("copy script -> {}", r.chars().take(200).collect::<String>()));
+                        copy(serde_json::from_str(&r).unwrap_or_default(), proxy.clone(), file.clone());
                     });
+                    if let Err(e) = res {
+                        log(&format!("copy script failed: {e}"));
+                    }
                 }
             }
             Cmd::AutoReload { path, on } => {

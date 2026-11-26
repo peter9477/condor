@@ -130,6 +130,27 @@ pub fn clipboard_text(text: &str) -> bool {
     set_clipboard(&[(13 /* CF_UNICODETEXT */, w)])
 }
 
+/// Put rich text (an HTML fragment) and its plain-text form on the clipboard, as a
+/// browser's Copy does: chat apps that take formatting (Slack) use the HTML.
+pub fn clipboard_html(html: &str, text: &str) -> bool {
+    // CF_HTML: a header of byte offsets, then the document with the fragment marked.
+    const HEAD: &str = "Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\nStartFragment:0000000000\r\nEndFragment:0000000000\r\n";
+    let pre = "<html><body><!--StartFragment-->";
+    let post = "<!--EndFragment--></body></html>";
+    let start_html = HEAD.len();
+    let start_frag = start_html + pre.len();
+    let end_frag = start_frag + html.len();
+    let end_html = end_frag + post.len();
+    let head = format!(
+        "Version:0.9\r\nStartHTML:{start_html:010}\r\nEndHTML:{end_html:010}\r\nStartFragment:{start_frag:010}\r\nEndFragment:{end_frag:010}\r\n"
+    );
+    let mut cf_html = format!("{head}{pre}{html}{post}").into_bytes();
+    cf_html.push(0);
+    let fmt = unsafe { windows::Win32::System::DataExchange::RegisterClipboardFormatW(windows::core::w!("HTML Format")) };
+    let w: Vec<u8> = text.encode_utf16().chain([0]).flat_map(|c| c.to_le_bytes()).collect();
+    set_clipboard(&[(13, w), (fmt, cf_html)])
+}
+
 /// Put files on the clipboard, as Explorer's Copy does: pasting attaches or copies them.
 pub fn clipboard_files(paths: &[String]) -> bool {
     // DROPFILES { pFiles, pt.x, pt.y, fNC, fWide }, then NUL-terminated wide paths and a final NUL.
@@ -199,8 +220,19 @@ pub fn open_terminal(dir: &str) {
     const CREATE_NEW_CONSOLE: u32 = 0x10;
     if let Some((distro, linux)) = wsl_parts(dir) {
         let linux = if linux.is_empty() { "/".to_string() } else { linux };
-        if Command::new("wt.exe").args(["wsl.exe", "-d", &distro, "--cd", &linux]).spawn().is_err() {
-            let _ = Command::new("wsl.exe").args(["-d", &distro, "--cd", &linux]).creation_flags(CREATE_NEW_CONSOLE).spawn();
+        // A fresh login shell of its own: BYOBU_DISABLE stops a byobu set up to start from
+        // ~/.profile from joining (and resizing) an existing session.
+        let shell = ["--", "env", "BYOBU_DISABLE=1", "bash", "-l"];
+        let wsl = |c: &mut Command| {
+            c.args(["-d", &distro, "--cd", &linux]).args(shell);
+        };
+        let mut wt = Command::new("wt.exe");
+        wt.arg("wsl.exe");
+        wsl(&mut wt);
+        if wt.spawn().is_err() {
+            let mut c = Command::new("wsl.exe");
+            wsl(&mut c);
+            let _ = c.creation_flags(CREATE_NEW_CONSOLE).spawn();
         }
         return;
     }

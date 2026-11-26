@@ -66,6 +66,10 @@ pub fn clipboard_text(_text: &str) -> bool {
     false
 }
 
+pub fn clipboard_html(_html: &str, _text: &str) -> bool {
+    false
+}
+
 pub fn clipboard_files(_paths: &[String]) -> bool {
     false
 }
