@@ -44,6 +44,8 @@ pub struct EnvState {
     pub auto_reload: BTreeSet<String>,
     /// Files last viewed as source rather than rendered (opening them uses that view).
     pub source_view: BTreeSet<String>,
+    /// Office files shown the other way from the global setting: "previewer" or "libreoffice".
+    pub office_view: BTreeMap<String, String>,
     /// The main window is split into two panes; the second shows `split_file`.
     pub split: bool,
     pub split_file: Option<String>,
@@ -98,6 +100,7 @@ impl Default for EnvState {
             viewable_only: false,
             excludes: Vec::new(),
             source_view: BTreeSet::new(),
+            office_view: BTreeMap::new(),
             split: false,
             split_file: None,
             split_side_by_side: true,
@@ -165,6 +168,9 @@ pub struct Settings {
     pub viewable_exts: Vec<String>,
     /// How documents use the pane's width: "narrow", "wide" (tables and code) or "full".
     pub doc_width: String,
+    /// Office and similar files: "auto" (the Windows previewer if one is installed, else
+    /// LibreOffice), "previewer", "libreoffice" or "off".
+    pub office_view: String,
 }
 
 impl Default for Settings {
@@ -172,6 +178,7 @@ impl Default for Settings {
         Settings {
             viewable_exts: crate::filters::DEFAULT_VIEWABLE.iter().map(|s| s.to_string()).collect(),
             doc_width: "wide".to_string(),
+            office_view: "auto".to_string(),
         }
     }
 }
@@ -189,6 +196,9 @@ impl Settings {
             .collect();
         if !matches!(self.doc_width.as_str(), "narrow" | "wide" | "full") {
             self.doc_width = "wide".into();
+        }
+        if !matches!(self.office_view.as_str(), "auto" | "previewer" | "libreoffice" | "off") {
+            self.office_view = "auto".into();
         }
         self
     }

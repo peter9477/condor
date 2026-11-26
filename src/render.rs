@@ -139,6 +139,11 @@ pub fn has_source_view(path: &str) -> bool {
     is_markdown(&ext) || matches!(ext.as_str(), "html" | "htm" | "xhtml" | "svg")
 }
 
+/// True if a content URL asks for a LibreOffice conversion.
+pub fn is_converted_url(url: &str) -> bool {
+    url.split('#').next().and_then(|u| u.split_once('?')).map_or(false, |(_, q)| q.split('&').any(|p| p == "converted"))
+}
+
 /// True if a content URL asks for the source view.
 pub fn is_source_url(url: &str) -> bool {
     url.split('#').next().and_then(|u| u.split_once('?')).map_or(false, |(_, q)| q.split('&').any(|p| p == "source"))
@@ -186,6 +191,13 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
         return listing(&path, url_path);
     }
     let ext = ext_of(&path);
+    // Office and similar documents, as a PDF made by LibreOffice (blocks while it converts).
+    if query.map_or(false, |q| q.split('&').any(|p| p == "converted")) {
+        return match crate::convert::to_pdf(&path) {
+            Ok(b) => respond(StatusCode::OK, "application/pdf", None, b),
+            Err(e) => message(StatusCode::OK, "Can't show this file", &format!("{}: {e}", file_name(&path))),
+        };
+    }
     if source {
         return text_view(&path, &ext, meta.len());
     }
@@ -341,7 +353,7 @@ pub fn render_markdown(src: &str, dir: Option<&Path>) -> String {
         Some(d) => link_code_paths(events, d),
         None => events,
     };
-    let events = front_matter(events);
+    let events = front_matter(file_links(events));
     let (events, coloured) = highlight_code_blocks(events);
     let mut out = String::with_capacity(src.len() * 3 / 2);
     if coloured {
@@ -511,6 +523,20 @@ fn join_rel(base: &Path, rel: &str) -> Option<PathBuf> {
         }
     }
     Some(out)
+}
+
+/// Point file:// links and images at Condor's own URL for the file: pages can't navigate to
+/// file: URLs, and this way they open in Condor like any other link to a local file.
+fn file_links(mut events: Vec<Event<'_>>) -> Vec<Event<'_>> {
+    for ev in &mut events {
+        if let Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) = ev {
+            if let Some(p) = paths::file_url_to_path(dest_url) {
+                let frag = dest_url.split_once('#').map(|(_, f)| format!("#{f}")).unwrap_or_default();
+                *dest_url = CowStr::from(format!("{}{frag}", paths::path_to_url_path(&p)));
+            }
+        }
+    }
+    events
 }
 
 /// Turn inline code naming an existing file or folder into a link to it. Looked up relative to the

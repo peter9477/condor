@@ -188,3 +188,5 @@ Line 79 of filler text to make the page scroll.
 
 Line 80 of filler text to make the page scroll.
 
+
+A `file://` link (opens in Condor): [sample.pdf](file://wsl$/Debian/code/condor/testdata/sample.pdf)

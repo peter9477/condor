@@ -235,6 +235,7 @@ dependencies = [
  "syntect",
  "tao",
  "webview2-com",
+ "windows",
  "wry",
 ]
 

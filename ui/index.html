@@ -41,7 +41,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 .pbar button.on { background: var(--sel); color: var(--cursor); }
 .pbar button:disabled { opacity: .35; cursor: default; }
 .pbar button:disabled:hover { background: none; }
-.pbar .b-auto, .pbar .b-src { font-size: 11px; }
+.pbar .b-auto, .pbar .b-src, .pbar .b-office { font-size: 11px; }
 .pbar .b-src { font-family: ui-monospace, Consolas, monospace; }
 .split-pane:not(.pane-focus) .pname { color: var(--muted); font-weight: 400; }
 #pdiv { position: absolute; background: var(--split); }
@@ -139,6 +139,11 @@ body.popout #side, body.popout #split { display: none; }
     <label><input type="radio" name="s-width" value="wide"> Wide tables and code; text at reading width</label>
     <label><input type="radio" name="s-width" value="full"> Full width</label>
     <label><input type="radio" name="s-width" value="narrow"> Reading width only</label>
+    <div class="flabel">Office documents (.docx, .xlsx, .vsd, ...):</div>
+    <label><input type="radio" name="s-office" value="auto"> Windows previewer if installed, else LibreOffice</label>
+    <label><input type="radio" name="s-office" value="libreoffice"> LibreOffice (converted to PDF)</label>
+    <label><input type="radio" name="s-office" value="previewer"> Windows previewer only</label>
+    <label><input type="radio" name="s-office" value="off"> Don't show them</label>
     <div class="flabel">Viewable file types (for "Only viewable file types"):</div>
     <textarea id="s-exts" rows="4" spellcheck="false"></textarea>
     <div class="fnote">Shared by all Condor windows.</div>
@@ -168,6 +173,7 @@ body.popout #side, body.popout #split { display: none; }
       <span class="pname"></span>
       <button class="b-star" title="Star this file">&#x2606;</button>
       <button class="b-tags" title="Tags">#</button>
+      <button class="b-office hidden"></button>
       <button class="b-src hidden" title="View source (Ctrl+U)">&lt;/&gt;</button>
       <button class="b-auto" title="Reload this file automatically when it changes">AUTO</button>
       <button class="b-reload" title="Reload (F5)">&#x21bb;</button>
@@ -687,6 +693,7 @@ function paneEl(id) {
   q(".b-fwd").onclick = () => send("forward");
   q(".b-src").onclick = () => send("toggleSource");
   q(".b-reload").onclick = () => send("reload");
+  q(".b-office").onclick = () => send("officeView", {mode: p.state.office === "previewer" ? "libreoffice" : "previewer"});
   q(".b-auto").onclick = () => { if (p.state.file) post({cmd: "autoReload", path: p.state.file, on: !p.state.auto}); };
   q(".b-split").onclick = () => send("split");
   q(".b-pop").onclick = () => send("popOut");
@@ -754,6 +761,11 @@ function onPane(msg) {
   src.classList.toggle("hidden", !msg.canSource);
   src.classList.toggle("on", !!msg.source);
   src.title = msg.source ? "Show the rendered view (Ctrl+U)" : "View source (Ctrl+U)";
+  const office = q(".b-office");
+  office.classList.toggle("hidden", !msg.office);
+  office.textContent = msg.office === "previewer" ? "PDF" : "PREVIEW";
+  office.title = msg.office === "previewer" ? "Show this file converted to PDF by LibreOffice"
+                                            : "Show this file with the Windows (Office) previewer";
   const auto = q(".b-auto");
   auto.disabled = !msg.file;
   auto.classList.toggle("on", !!msg.auto);
@@ -790,14 +802,15 @@ function onBanner(msg) {
   if (!msg.show) { p.bannerMsg = null; return; }
   p.bannerMsg = msg;
   const name = baseName(msg.path);
-  const open = msg.kind === "open";
+  const open = msg.kind === "open", conv = msg.kind === "converting";
   const q = (c) => p.banner.querySelector(c);
-  p.banner.classList.toggle("info", open);
+  p.banner.classList.toggle("info", open || conv);
   q(".msg").textContent = open ? "Condor can't show " + name + "."
+    : conv ? "Converting " + name + " with LibreOffice\u2026"
     : msg.deleted ? name + " was deleted or moved. You are viewing the last version loaded."
     : name + " has changed on disk.";
-  q(".bb-reload").classList.toggle("hidden", open || !!msg.deleted);
-  q(".bb-auto").classList.toggle("hidden", open || !!msg.deleted);
+  q(".bb-reload").classList.toggle("hidden", open || conv || !!msg.deleted);
+  q(".bb-auto").classList.toggle("hidden", open || conv || !!msg.deleted);
   q(".bb-open").classList.toggle("hidden", !open);
   q(".bb-openwith").classList.toggle("hidden", !open || !msg.openWith);
   q(".bb-close").title = open ? "Dismiss" : "Keep viewing this version";
@@ -931,6 +944,7 @@ let settings = {viewable_exts: [], doc_width: "wide"};
 const spanel = document.getElementById("spanel");
 function showSettings() {
   for (const r of document.querySelectorAll('input[name="s-width"]')) r.checked = r.value === settings.doc_width;
+  for (const r of document.querySelectorAll('input[name="s-office"]')) r.checked = r.value === (settings.office_view || "auto");
   document.getElementById("s-exts").value = settings.viewable_exts.join(" ");
 }
 document.getElementById("gear").onclick = () => {
@@ -942,7 +956,8 @@ document.getElementById("s-apply").onclick = () => {
   const w = document.querySelector('input[name="s-width"]:checked');
   post({cmd: "setSettings", settings: {
     viewable_exts: document.getElementById("s-exts").value.split(/[\s,;]+/).filter(Boolean),
-    doc_width: w ? w.value : "wide"}});
+    doc_width: w ? w.value : "wide",
+    office_view: (document.querySelector('input[name="s-office"]:checked') || {value: "auto"}).value}});
 };
 // The mouse's own back/forward buttons, when the pointer is over the sidebar.
 document.addEventListener("mouseup", (e) => {

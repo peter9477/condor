@@ -196,3 +196,122 @@ mod tests {
         assert!(!crate::platform::is_under("C:\\docsx", "C:\\docs"));
     }
 }
+
+/// A shell preview handler (what Explorer's preview pane uses; e.g. Office's previewers)
+/// showing a file in a child window of ours.
+pub struct Preview {
+    host: windows::Win32::Foundation::HWND,
+    handler: windows::Win32::UI::Shell::IPreviewHandler,
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(Some(0)).collect()
+}
+
+/// Whether a preview handler is registered for this file's type.
+pub fn has_previewer(path: &str) -> bool {
+    previewer_clsid(path).is_some()
+}
+
+fn previewer_clsid(path: &str) -> Option<String> {
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_INIT_DEFAULTTOSTAR, ASSOCSTR_SHELLEXTENSION};
+    let ext = std::path::Path::new(path).extension()?.to_string_lossy().into_owned();
+    let ext = wide(&format!(".{ext}"));
+    let iid = wide("{8895b1c6-b41f-4c1c-a562-0d564250836f}"); // IPreviewHandler
+    let mut buf = [0u16; 64];
+    let mut len = buf.len() as u32;
+    let hr = unsafe {
+        AssocQueryStringW(ASSOCF_INIT_DEFAULTTOSTAR, ASSOCSTR_SHELLEXTENSION, PCWSTR(ext.as_ptr()), PCWSTR(iid.as_ptr()), Some(PWSTR(buf.as_mut_ptr())), &mut len)
+    };
+    if hr.is_err() {
+        return None;
+    }
+    let s = String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1).min(buf.len())]);
+    let s = s.trim_end_matches('\0').to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+impl Preview {
+    /// Show `path` with its registered preview handler, in a child of `parent` at the given
+    /// physical-pixel rectangle. None if there is no handler or it fails.
+    pub fn open(parent: isize, path: &str, rect: (i32, i32, i32, i32)) -> Result<Preview, String> {
+        use windows::core::{Interface, PCWSTR};
+        use windows::Win32::Foundation::{HWND, RECT};
+        use windows::Win32::System::Com::{CLSIDFromString, CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, STGM_READ, STGM_SHARE_DENY_NONE};
+        use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithStream};
+        use windows::Win32::UI::Shell::{IPreviewHandler, SHCreateStreamOnFileEx};
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_CHILD, WS_CLIPCHILDREN, WS_VISIBLE};
+        let clsid = previewer_clsid(path).ok_or("no previewer registered")?;
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let clsid_w = wide(&clsid);
+            let guid = CLSIDFromString(PCWSTR(clsid_w.as_ptr())).map_err(|e| e.to_string())?;
+            let handler: IPreviewHandler =
+                CoCreateInstance(&guid, None, CLSCTX_LOCAL_SERVER | CLSCTX_INPROC_SERVER).map_err(|e| format!("starting it: {e}"))?;
+            let pw = wide(path);
+            let init = if let Ok(f) = handler.cast::<IInitializeWithFile>() {
+                f.Initialize(PCWSTR(pw.as_ptr()), STGM_READ.0)
+            } else if let Ok(s) = handler.cast::<IInitializeWithStream>() {
+                let stream = SHCreateStreamOnFileEx(PCWSTR(pw.as_ptr()), (STGM_READ | STGM_SHARE_DENY_NONE).0, 0, false, None)
+                    .map_err(|e| e.to_string())?;
+                s.Initialize(&stream, STGM_READ.0)
+            } else {
+                return Err("it can't open files".into());
+            };
+            init.map_err(|e| format!("opening the file: {e}"))?;
+            let class = wide("STATIC");
+            let host = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(class.as_ptr()),
+                PCWSTR::null(),
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                rect.0,
+                rect.1,
+                rect.2,
+                rect.3,
+                Some(HWND(parent as *mut _)),
+                None,
+                None,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            let r = RECT { left: 0, top: 0, right: rect.2, bottom: rect.3 };
+            let shown = handler.SetWindow(host, &r).and_then(|_| handler.DoPreview());
+            if let Err(e) = shown {
+                let _ = handler.Unload();
+                let _ = DestroyWindow(host);
+                return Err(format!("previewing: {e}"));
+            }
+            let p = Preview { host, handler };
+            p.set_rect(rect);
+            Ok(p)
+        }
+    }
+
+    /// Move it (physical pixels, relative to the parent window).
+    pub fn set_rect(&self, rect: (i32, i32, i32, i32)) {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_SHOWWINDOW};
+        unsafe {
+            let _ = SetWindowPos(self.host, Some(HWND_TOP), rect.0, rect.1, rect.2.max(1), rect.3.max(1), SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let r = RECT { left: 0, top: 0, right: rect.2.max(1), bottom: rect.3.max(1) };
+            let _ = self.handler.SetRect(&r);
+        }
+    }
+}
+
+impl Drop for Preview {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.handler.Unload();
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(self.host);
+        }
+    }
+}
+
+/// The native handle of a window, for `Preview::open`.
+pub fn window_handle(w: &tao::window::Window) -> isize {
+    use tao::platform::windows::WindowExtWindows;
+    w.hwnd() as isize
+}

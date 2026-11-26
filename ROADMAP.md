@@ -14,9 +14,9 @@ Ideas recorded for later; none of these are implemented yet.
 - Choose "any" or "all" when filtering by several tags (it's "any" now).
 
 ## Previews of other formats
-- Office files (.xlsx/.xls, .docx/.doc, .vsdx/.vsd, .pptx): host the Windows preview
-  handlers Office installs (what Explorer's preview pane uses), or convert with
-  LibreOffice to PDF, or render spreadsheets to HTML with a pure-Rust reader.
+- Previewer windows sit on top of everything in their pane's area, so the tag editor and
+  menus can be hidden behind them.
+- LibreOffice paginates wide spreadsheets; an HTML export might read better.
 
 ## Environments and windows
 - Environment selector UI (state is already one file per environment; `--env NAME` works).

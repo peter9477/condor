@@ -10,6 +10,7 @@
 //! The main window has the tree and one or two panes (split side by side or stacked).
 //! Pop-out windows have a single pane and no tree.
 
+mod convert;
 mod filters;
 mod paths;
 mod platform;
@@ -73,6 +74,8 @@ enum UserEvent {
     FileChanged(PaneId, String, bool),
     /// Reload a pane, first recording this scroll position for its file.
     ReloadAt(PaneId, String, f64),
+    /// Load this URL in a pane (a file:// link, redirected to Condor's own URL for the file).
+    LoadContent(PaneId, String),
     /// A pane's document got keyboard focus.
     Focus(PaneId),
     /// A new build of condor.exe has been installed where we were started from.
@@ -113,6 +116,8 @@ enum Cmd {
     OpenOther { path: String },
     /// The first pane's share of a split.
     PaneRatio { ratio: f64 },
+    /// Show the pane's Office file with the Windows previewer or LibreOffice.
+    OfficeView { pane: Option<PaneId>, mode: String },
     /// Replace the tags on a file or folder (an empty list removes them).
     SetTags { path: String, dir: bool, tags: Vec<String> },
     /// Filter the tree to items with any of these tags (empty: no filter).
@@ -149,6 +154,10 @@ struct Pane {
     restoring: bool,
     /// The banner showing under the pane's bar, if any (the message sent to the UI).
     banner: Option<serde_json::Value>,
+    /// A Windows preview handler showing the file in place of the content view.
+    preview: Option<platform::Preview>,
+    /// Where the document goes, in physical pixels (x, y, w, h).
+    rect: std::cell::Cell<(i32, i32, i32, i32)>,
 }
 
 struct App {
@@ -291,6 +300,7 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
     let w_serve = watcher.clone();
     let w_nav = watcher.clone();
     let (p_nav, p_load, p_new, p_focus) = (proxy.clone(), proxy.clone(), proxy.clone(), proxy.clone());
+    let p_redirect = proxy.clone();
     let file_origin = paths::file_origin();
     let fo2 = file_origin.clone();
     let start = format!("{}://localhost{}", paths::FILE_SCHEME, url.strip_prefix(&file_origin).unwrap_or("/"));
@@ -313,6 +323,10 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
                 true
             } else if url.starts_with("about:") || url.starts_with("data:") || url.starts_with("blob:") {
                 true
+            } else if let Some(p) = paths::file_url_to_path(&url) {
+                // file:// links open here, like any other link to a local file.
+                let _ = p_redirect.send_event(UserEvent::LoadContent(id, paths::path_to_url(&p)));
+                false
             } else {
                 platform::open_external(&url);
                 false
@@ -321,6 +335,8 @@ fn build_content(ctx: &mut WebContext, window: &Window, proxy: &EventLoopProxy<U
         .with_new_window_req_handler(move |url, _features| {
             if url.starts_with(&fo2) {
                 let _ = p_new.send_event(UserEvent::OpenWindow(url));
+            } else if let Some(p) = paths::file_url_to_path(&url) {
+                let _ = p_new.send_event(UserEvent::OpenWindow(paths::path_to_url(&p)));
             } else {
                 platform::open_external(&url);
             }
@@ -451,7 +467,17 @@ impl App {
         let (content, watcher) = build_content(&mut self.ctx, window, &self.proxy, id, &url);
         self.panes.insert(
             id,
-            Pane { shell: wid, content, watcher, current: None, url: String::new(), restoring: false, banner: None },
+            Pane {
+                shell: wid,
+                content,
+                watcher,
+                current: None,
+                url: String::new(),
+                restoring: false,
+                banner: None,
+                preview: None,
+                rect: Default::default(),
+            },
         );
         if let Some(sh) = self.shells.get_mut(&wid) {
             sh.panes.push(id);
@@ -593,6 +619,10 @@ impl App {
                 position: PhysicalPosition::new(x as i32, y as i32).into(),
                 size: PhysicalSize::new(w.max(0.0) as u32, h as u32).into(),
             });
+            p.rect.set((x as i32, y as i32, w.max(0.0) as i32, h as i32));
+            if let Some(pv) = &p.preview {
+                pv.set_rect(p.rect.get());
+            }
             panes.push(json!({"id": id, "x": r.0, "y": r.1, "w": r.2, "h": r.3, "focused": *id == sh.focused}));
         }
         self.send_ui(
@@ -607,10 +637,16 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return };
         let can = p.current.as_deref().map_or(false, render::has_source_view);
         let auto = p.current.as_ref().map_or(false, |f| self.st.auto_reload.contains(f));
+        // Office files: which viewer shows it, and whether the other one is available.
+        let office = match &p.current {
+            Some(f) if p.preview.is_some() && convert::convertible(f) && convert::available() => Some("previewer"),
+            Some(f) if render::is_converted_url(&p.url) && platform::has_previewer(f) => Some("libreoffice"),
+            _ => None,
+        };
         self.send_ui(
             p.shell,
             &json!({"ev": "pane", "id": id, "file": p.current, "canSource": can,
-                    "source": can && render::is_source_url(&p.url), "auto": auto}),
+                    "source": can && render::is_source_url(&p.url), "auto": auto, "office": office}),
         );
         if let Some((back, fwd)) = platform::history_state(&p.content) {
             self.send_ui(p.shell, &json!({"ev": "history", "id": id, "back": back, "forward": fwd}));
@@ -623,6 +659,16 @@ impl App {
         for w in self.shells.keys() {
             self.send_ui(*w, &msg);
         }
+    }
+
+    /// File types the tree shows undimmed besides the viewable list: those with highlighting,
+    /// and Office documents when a previewer or LibreOffice can show them.
+    fn showable(&self) -> Vec<String> {
+        let mut v = highlight::extensions();
+        if self.settings.office_view != "off" && (cfg!(windows) || convert::available()) {
+            v.extend(convert::EXTS.iter().map(|s| s.to_string()));
+        }
+        v
     }
 
     fn init_message(&self, wid: WindowId) -> serde_json::Value {
@@ -644,7 +690,7 @@ impl App {
             "tagFilter": self.st.tag_filter,
             "star": state::STAR,
             // Shown in full in the tree; other files are dimmed (Condor can't preview them).
-            "showable": highlight::extensions(),
+            "showable": self.showable(),
         })
     }
 
@@ -871,6 +917,22 @@ impl App {
                 self.mark_dirty();
                 self.send_tags();
             }
+            Cmd::OfficeView { pane, mode } => {
+                let Some(id) = self.pane_of(wid, pane) else { return };
+                let Some(file) = self.panes[&id].current.clone() else { return };
+                if !matches!(mode.as_str(), "previewer" | "libreoffice") {
+                    return;
+                }
+                let global = self.settings.office_view.as_str();
+                if mode == global || (global == "auto" && mode == "previewer") {
+                    self.st.office_view.remove(&file);
+                } else {
+                    self.st.office_view.insert(file.clone(), mode);
+                }
+                self.mark_dirty();
+                // Load the plain URL: the page-loaded check then picks the viewer.
+                let _ = self.panes[&id].content.load_url(&paths::path_to_url(&file));
+            }
             Cmd::PaneRatio { ratio } => {
                 if ratio.is_finite() {
                     self.st.split_ratio = ratio.clamp(0.1, 0.9);
@@ -898,6 +960,9 @@ impl App {
         debug(|| format!("nav {id} {url}"));
         let path = paths::url_to_path(url);
         let Some(p) = self.panes.get_mut(&id) else { return };
+        if p.preview.take().is_some() {
+            let _ = p.content.set_visible(true);
+        }
         let moved = path != p.current;
         p.current = path.clone();
         p.url = url.to_string();
@@ -917,6 +982,30 @@ impl App {
         let Some(p) = self.panes.get(&id) else { return };
         if p.current.as_deref() != Some(path) || p.banner.is_some() {
             return; // moved on, or a change banner is already showing
+        }
+        let mode = self.st.office_view.get(path).cloned().unwrap_or_else(|| self.settings.office_view.clone());
+        if matches!(mode.as_str(), "auto" | "previewer") {
+            let hwnd = platform::window_handle(&self.shells[&p.shell].window);
+            match platform::Preview::open(hwnd, path, p.rect.get()) {
+                Ok(pv) => {
+                    debug(|| format!("previewer for {path}"));
+                    let p = self.panes.get_mut(&id).unwrap();
+                    let _ = p.content.set_visible(false);
+                    p.preview = Some(pv);
+                    self.send_pane_state(id);
+                    return;
+                }
+                Err(e) => debug(|| format!("previewer for {path}: {e}")),
+            }
+        }
+        let p = &self.panes[&id];
+        if matches!(mode.as_str(), "auto" | "libreoffice") && convert::convertible(path) && convert::available() {
+            // Replace (not add to) the history entry, so Back skips the placeholder.
+            let url = format!("{}?converted", paths::path_to_url(path));
+            let _ = p.content.evaluate_script(&format!("location.replace({})", json!(url)));
+            let msg = json!({"ev": "banner", "pane": id, "show": true, "kind": "converting", "path": path});
+            self.set_banner(id, Some(msg));
+            return;
         }
         let msg = json!({"ev": "banner", "pane": id, "show": true, "kind": "open", "path": path, "openWith": platform::CAN_OPEN_WITH});
         self.set_banner(id, Some(msg));
@@ -979,6 +1068,13 @@ impl App {
         self.send_pane_state(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let path = paths::url_to_path(url);
+        if render::is_converted_url(url) {
+            let converting = p.banner.as_ref().map_or(false, |b| b["kind"] == "converting");
+            if converting {
+                self.set_banner(id, None);
+            }
+            return;
+        }
         if let Some(f) = path.clone() {
             let proxy = self.proxy.clone();
             std::thread::spawn(move || {
@@ -1211,6 +1307,11 @@ fn main() {
                 UserEvent::ReloadAt(id, url, y) => app.on_reload_at(id, &url, y),
                 UserEvent::NoPreview(id, path) => app.on_no_preview(id, &path),
                 UserEvent::OpenWindow(url) => app.pop_out_url(target, Some(url), None),
+                UserEvent::LoadContent(id, url) => {
+                    if let Some(p) = app.panes.get(&id) {
+                        let _ = p.content.load_url(&url);
+                    }
+                }
                 UserEvent::Focus(id) => app.set_focus(id),
                 UserEvent::UpdateAvailable => {
                     app.update_ready = true;

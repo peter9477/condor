@@ -157,3 +157,21 @@ mod tests {
         assert_eq!(normalise_path("/a/b/"), "/a/b");
     }
 }
+
+/// Shell preview handlers are Windows-only; other platforms use LibreOffice (see convert.rs).
+pub struct Preview;
+
+pub fn has_previewer(_path: &str) -> bool {
+    false
+}
+
+impl Preview {
+    pub fn open(_parent: isize, _path: &str, _rect: (i32, i32, i32, i32)) -> Result<Preview, String> {
+        Err("not available on this platform".into())
+    }
+    pub fn set_rect(&self, _rect: (i32, i32, i32, i32)) {}
+}
+
+pub fn window_handle(_w: &tao::window::Window) -> isize {
+    0
+}

@@ -51,6 +51,31 @@ pub fn path_to_url(path: &str) -> String {
 }
 
 /// Full content-webview URL -> path, if it is one of ours.
+/// The path a `file:` URL names: file:///C:/a%20b.md -> C:\a b.md,
+/// file://server/share/x -> \\server\share\x (on Windows). None for other URLs.
+pub fn file_url_to_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("file:").or_else(|| url.strip_prefix("FILE:"))?;
+    let rest = rest.split(['#', '?']).next().unwrap_or("");
+    let rest = percent_decode(rest);
+    let (host, path) = match rest.strip_prefix("//") {
+        Some(r) => r.split_once('/').map_or((r, ""), |(h, p)| (h, p)),
+        None => ("", rest.trim_start_matches('/')),
+    };
+    let host = if host.eq_ignore_ascii_case("localhost") { "" } else { host };
+    if path.is_empty() && host.is_empty() {
+        return None;
+    }
+    let p = if cfg!(windows) {
+        let p = path.replace('/', "\\");
+        if host.is_empty() { p } else { format!("\\\\{host}\\{p}") }
+    } else if host.is_empty() {
+        format!("/{path}")
+    } else {
+        return None;
+    };
+    Some(crate::platform::normalise_path(&p))
+}
+
 pub fn url_to_path(url: &str) -> Option<String> {
     let rest = url.strip_prefix(&file_origin())?;
     let rest = rest.split(['?', '#']).next().unwrap_or("");
