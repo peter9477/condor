@@ -6,9 +6,17 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
 - Renders **Markdown** (GitHub-flavoured), HTML pages, PDF, images, and plain text / source files.
 - Shows *everything* on disk, including git-ignored files and nested repositories.
 - Works with WSL paths (`\\wsl$\...`) and network shares; folders are read lazily in the background.
-- Links between documents work, and so do file paths written in code style (`src/main.rs`,
-  `../README.md:42`) when the file exists, relative to the document or to its root folder.
-  ← / → in the toolbar, Alt+Left/Right and the mouse's side buttons go back and forward.
+- Links between documents work, and so do file and folder paths written in code style
+  (`src/main.rs`, `../README.md:42`, `src/ui/`) when they exist, relative to the document or
+  to its root folder. The tree follows along. ← / → in the toolbar, Alt+Left/Right and the
+  mouse's side buttons go back and forward.
+- Each document's scroll position and text selection are kept, both while moving between
+  documents and across restarts (PDFs keep their position only within the PDF viewer).
+- `</>` in the toolbar (or Ctrl+U) switches Markdown, HTML and SVG files between the
+  rendered view and highlighted source.
+- Files Condor can't show (spreadsheets, Word documents, other binaries) get **Open** and
+  **Open with…** buttons; right-clicking any file in the tree offers the same. Programs and
+  scripts ask before running.
 - Remembers its state per environment: roots, expanded folders, open file, scroll position, window placement.
 
 Built in Rust on [wry](https://github.com/tauri-apps/wry) and [tao](https://github.com/tauri-apps/tao)

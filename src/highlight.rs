@@ -43,6 +43,11 @@ fn usable(s: &'static SyntaxReference) -> Option<&'static SyntaxReference> {
 /// Syntax for a file, by extension, or by its first line (`#!/usr/bin/env python`).
 pub fn for_file(ext: &str, text: &str) -> Option<&'static SyntaxReference> {
     let ss = syntaxes();
+    let ext = match ext {
+        "svg" | "xsd" | "xsl" | "xslt" | "plist" => "xml",
+        "xhtml" => "html",
+        e => e,
+    };
     let by_ext = if ext.is_empty() { None } else { ss.find_syntax_by_extension(ext) };
     let by_line = || text.lines().next().and_then(|l| ss.find_syntax_by_first_line(l));
     by_ext.or_else(by_line).and_then(usable)

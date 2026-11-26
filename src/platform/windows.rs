@@ -94,6 +94,44 @@ pub fn launch(url: &str) {
     let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
 }
 
+/// Open a file with its default application, as a double-click in Explorer would.
+pub fn open_path(path: &str) {
+    let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
+}
+
+/// Windows has an "Open with" chooser.
+pub const CAN_OPEN_WITH: bool = true;
+
+/// Show the system's "Open with" chooser for a file.
+pub fn open_with(path: &str) {
+    use std::os::windows::process::CommandExt;
+    // OpenAs_RunDLL takes the rest of the command line, unquoted, as the path. Windows
+    // paths cannot contain '"', and nothing after the path is parsed.
+    let _ = std::process::Command::new("rundll32.exe").raw_arg(format!("shell32.dll,OpenAs_RunDLL {path}")).spawn();
+}
+
+/// Whether opening the file would run it (programs, scripts, shortcuts, installers).
+pub fn is_executable(path: &str) -> bool {
+    const ALSO: &[&str] = &["lnk", "url", "hta", "msi", "msp", "scr", "ps1", "psm1", "reg", "cpl", "jar", "pif",
+        "appref-ms", "application", "gadget", "inf", "scf", "settingcontent-ms", "msix", "appx"];
+    let name = crate::platform::file_name(path);
+    let Some((_, ext)) = name.rsplit_once('.') else { return false };
+    let ext = ext.to_ascii_lowercase();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC".into());
+    ALSO.contains(&ext.as_str()) || pathext.split(';').any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext))
+}
+
+/// A native OK / Cancel question; true for OK.
+pub fn confirm(title: &str, text: &str) -> bool {
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title(title)
+        .set_description(text)
+        .set_buttons(rfd::MessageButtons::OkCancel)
+        .show()
+        == rfd::MessageDialogResult::Ok
+}
+
 pub fn pick_folder(title: &str) -> Option<PathBuf> {
     rfd::FileDialog::new().set_title(title).pick_folder()
 }

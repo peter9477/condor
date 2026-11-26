@@ -57,6 +57,14 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #banner { position: absolute; left: calc(var(--w) + 5px); right: 0; top: 0; height: 34px; display: flex; align-items: center;
   gap: 8px; padding: 0 10px; background: #fff8c5; color: #3b2300; border-bottom: 1px solid #d4a72c; white-space: nowrap; overflow: hidden; }
 @media (prefers-color-scheme: dark) { #banner { background: #3a2f0b; color: #f2e3b3; border-color: #9e6a03; } }
+#banner.info { background: #ddf4ff; color: #0a3069; border-color: #54aeff; }
+#banner.info button { border-color: #0969da; }
+#banner.info button:hover { background: rgba(9,105,218,.15); }
+@media (prefers-color-scheme: dark) { #banner.info { background: #0c2d4a; color: #cae8ff; border-color: #1f6feb; } #banner.info button { border-color: #4493f8; } }
+#menu { position: fixed; z-index: 10; min-width: 150px; padding: 4px 0; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+#menu button { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--fg); font: inherit; padding: 4px 14px; cursor: pointer; }
+#menu button:hover { background: var(--hover); }
 #banner .msg { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
 #banner button { font: inherit; padding: 2px 10px; border-radius: 4px; border: 1px solid #bf8700; background: transparent; color: inherit; cursor: pointer; }
 #banner button:hover { background: rgba(191,135,0,.2); }
@@ -64,6 +72,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #bar #update { width: auto; padding: 0 8px; font-size: 12px; background: #1f883d; color: #fff; border-radius: 12px; margin-right: 4px; }
 #bar #update:hover { background: #1a7f37; }
 #bar #auto { font-size: 11px; width: auto; padding: 0 5px; }
+#bar #src { font-size: 11px; width: auto; padding: 0 5px; font-family: ui-monospace, Consolas, monospace; }
 #bar #auto:disabled, #bar #back:disabled, #bar #fwd:disabled { opacity: .35; cursor: default; }
 #bar #back:disabled:hover, #bar #fwd:disabled:hover { background: none; }
 .dragover > .row { box-shadow: inset 0 2px 0 var(--cursor); }
@@ -76,6 +85,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
     <button id="update" class="hidden" title="A new version of Condor is installed: restart into it (keeps your place)">Restart</button>
     <button id="back" title="Back (Alt+Left)">&#x2190;</button>
     <button id="fwd" title="Forward (Alt+Right)">&#x2192;</button>
+    <button id="src" class="hidden" title="View source (Ctrl+U)">&lt;/&gt;</button>
     <button id="auto" title="Reload the open file automatically when it changes" disabled>AUTO</button>
     <button id="filter" title="Filters: hidden files, file types, exclusions">&#x29e9;</button>
     <button id="add" title="Add a folder (root)">+</button>
@@ -93,10 +103,13 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 </div>
 <div id="split"></div>
 <div id="pane"></div>
+<div id="menu" class="hidden"><button id="m-open">Open</button><button id="m-openwith">Open with&#x2026;</button></div>
 <div id="banner" class="hidden">
   <span class="msg" id="bmsg"></span>
   <button id="breload">Reload</button>
   <button id="bauto" title="Reload this file automatically from now on">Always auto-reload this file</button>
+  <button id="bopen" title="Open in its default application">Open</button>
+  <button id="bopenwith" title="Choose an application to open it with">Open with&#x2026;</button>
   <button class="close" id="bclose" title="Keep viewing this version">&#x00d7;</button>
 </div>
 <script>
@@ -226,6 +239,7 @@ function onList(msg) {
     kids.append(e);
   }
   if (cursor && !cursor.isConnected) cursor = null;
+  if (revealing && isWithin(revealing, msg.path)) revealStep();
 }
 
 function forget(n) {
@@ -267,8 +281,42 @@ function select(path) {
   if (n) {
     rowOf(n).classList.add("sel");
     if (!cursor) setCursor(n, false);
-    rowOf(n).scrollIntoView({block: "nearest"});
   }
+  revealPath(path);
+}
+
+// Expand the folders leading to `path` (listing them as needed) and scroll it into view,
+// e.g. after following a link in a document. Stops quietly if a filter hides it.
+let revealing = null, revealLast = null;
+function keyOf(p) { return p.toLowerCase().replace(/[\\/]+$/, ""); }
+function isWithin(p, a) {
+  const kp = keyOf(p), ka = keyOf(a);
+  return kp === ka || kp.startsWith(ka + "\\") || kp.startsWith(ka + "/");
+}
+function revealPath(path) {
+  revealing = path || null;
+  revealLast = null;
+  revealStep();
+}
+function revealStep() {
+  if (!revealing) return;
+  let best = null;
+  for (const [p, n] of nodes) {
+    if (n.isConnected && isWithin(revealing, p) && (!best || p.length > best.dataset.path.length)) best = n;
+  }
+  if (!best) { revealing = null; return; }
+  if (keyOf(best.dataset.path) === keyOf(revealing)) {
+    revealing = null;
+    const row = rowOf(best);
+    if (row.offsetParent !== null) row.scrollIntoView({block: "nearest"});
+    return;
+  }
+  // Already opened and listed this folder, and the target isn't in it: give up.
+  if (best === revealLast && loaded.has(best.dataset.path)) { revealing = null; return; }
+  revealLast = best;
+  const open = !kidsOf(best).classList.contains("hidden");
+  if (!open) setOpen(best, true, true);           // its listing arrives in onList, which calls us
+  else if (loaded.has(best.dataset.path)) revealStep();
 }
 
 function setCursor(n, scroll) {
@@ -338,6 +386,11 @@ tree.addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === "u" || e.key === "U")) {
+    post({cmd: "toggleSource"});
+    e.preventDefault();
+    return;
+  }
   if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
     post({cmd: e.key === "ArrowLeft" ? "back" : "forward"});
     e.preventDefault();
@@ -386,16 +439,46 @@ autoBtn.onclick = () => { if (selected) post({cmd: "autoReload", path: selected,
 document.getElementById("breload").onclick = () => post({cmd: "reload"});
 document.getElementById("bauto").onclick = () => { if (selected) post({cmd: "autoReload", path: selected, on: true}); };
 document.getElementById("bclose").onclick = () => post({cmd: "dismiss"});
+let bannerPath = null;
 function showBanner(msg) {
   banner.classList.toggle("hidden", !msg.show);
   if (!msg.show) return;
+  bannerPath = msg.path;
   const name = baseName(msg.path);
-  document.getElementById("bmsg").textContent = msg.deleted
-    ? name + " was deleted or moved. You are viewing the last version loaded."
+  const open = msg.kind === "open";
+  banner.classList.toggle("info", open);
+  document.getElementById("bmsg").textContent = open ? "Condor can't show " + name + "."
+    : msg.deleted ? name + " was deleted or moved. You are viewing the last version loaded."
     : name + " has changed on disk.";
-  document.getElementById("breload").classList.toggle("hidden", !!msg.deleted);
-  document.getElementById("bauto").classList.toggle("hidden", !!msg.deleted);
+  document.getElementById("breload").classList.toggle("hidden", open || !!msg.deleted);
+  document.getElementById("bauto").classList.toggle("hidden", open || !!msg.deleted);
+  document.getElementById("bopen").classList.toggle("hidden", !open);
+  document.getElementById("bopenwith").classList.toggle("hidden", !open || !msg.openWith);
 }
+document.getElementById("bopen").onclick = () => post({cmd: "openExternal", path: bannerPath, with: false});
+document.getElementById("bopenwith").onclick = () => post({cmd: "openExternal", path: bannerPath, with: true});
+
+// Right-click a file in the tree: open it in another application.
+let canOpenWith = false, menuPath = null;
+const menu = document.getElementById("menu");
+function hideMenu() { menu.classList.add("hidden"); }
+tree.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const row = e.target.closest(".row");
+  const n = row && row.parentElement;
+  if (!n || !n.classList.contains("node") || n.dataset.dir) { hideMenu(); return; }
+  menuPath = n.dataset.path;
+  document.getElementById("m-openwith").classList.toggle("hidden", !canOpenWith);
+  menu.classList.remove("hidden");
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(e.clientX, innerWidth - r.width - 4) + "px";
+  menu.style.top = Math.min(e.clientY, innerHeight - r.height - 4) + "px";
+});
+document.getElementById("m-open").onclick = () => { hideMenu(); post({cmd: "openExternal", path: menuPath, with: false}); };
+document.getElementById("m-openwith").onclick = () => { hideMenu(); post({cmd: "openExternal", path: menuPath, with: true}); };
+document.addEventListener("mousedown", (e) => { if (!menu.contains(e.target)) hideMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideMenu(); });
+window.addEventListener("blur", hideMenu);
 
 document.getElementById("update").onclick = () => post({cmd: "restart"});
 
@@ -426,6 +509,7 @@ function relistAll() {
 document.getElementById("add").onclick = () => post({cmd: "addRoot"});
 document.getElementById("reload").onclick = () => post({cmd: "reload"});
 document.getElementById("back").onclick = () => post({cmd: "back"});
+document.getElementById("src").onclick = () => post({cmd: "toggleSource"});
 document.getElementById("fwd").onclick = () => post({cmd: "forward"});
 // The mouse's own back/forward buttons, when the pointer is over the sidebar.
 document.addEventListener("mouseup", (e) => {
@@ -464,6 +548,13 @@ window.condor = {
   recv(msg) {
     switch (msg.ev) {
       case "update": document.getElementById("update").classList.remove("hidden"); break;
+      case "view": {
+        const b = document.getElementById("src");
+        b.classList.toggle("hidden", !msg.can);
+        b.classList.toggle("on", !!msg.source);
+        b.title = msg.source ? "Show the rendered view (Ctrl+U)" : "View source (Ctrl+U)";
+        break;
+      }
       case "history":
         document.getElementById("back").disabled = !msg.back;
         document.getElementById("fwd").disabled = !msg.forward;
@@ -476,6 +567,7 @@ window.condor = {
         roots = msg.roots;
         setWidth(msg.sidebar);
         filters = msg.filters; showFilter();
+        canOpenWith = !!msg.openWith;
         lastDpr = devicePixelRatio;
         post({cmd: "sidebar", width: msg.sidebar, dpr: devicePixelRatio});
         document.getElementById("envname").textContent = msg.env === "default" ? "Condor" : msg.env;

@@ -8,7 +8,9 @@
 //! - `config_dir` / `local_data_dir` / `WEBVIEW_DATA`: where settings and caches go.
 //! - `is_hidden`: whether a directory entry counts as hidden.
 //! - `launch`: hand a URL to the system's default handler.
+//! - `open_path` / `open_with` / `CAN_OPEN_WITH` / `is_executable`: open files in other apps.
 //! - `pick_folder`: a native "choose folder" dialog.
+//! - `confirm`: a native OK / Cancel question.
 //! - `tune_ui_webview`: platform-specific webview builder settings.
 //! - `history_go` / `history_state`: back and forward in a webview's history.
 //!

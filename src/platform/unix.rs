@@ -81,6 +81,37 @@ pub fn launch(url: &str) {
     let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
+/// Open a file with its default application.
+pub fn open_path(path: &str) {
+    launch(path);
+}
+
+/// No portable "Open with" chooser here, so the UI leaves that button out.
+pub const CAN_OPEN_WITH: bool = false;
+
+pub fn open_with(path: &str) {
+    open_path(path);
+}
+
+/// Whether opening the file would run it.
+pub fn is_executable(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let by_ext = path.ends_with(".desktop") || path.ends_with(".app") || path.ends_with(".command");
+    by_ext || std::fs::metadata(path).map_or(false, |m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// A native OK / Cancel question; true for OK.
+pub fn confirm(title: &str, text: &str) -> bool {
+    let st = if cfg!(target_os = "macos") {
+        let clean = |s: &str| s.replace(['"', '\\'], "");
+        let script = format!("display dialog \"{}\" with title \"{}\" with icon caution", clean(text), clean(title));
+        std::process::Command::new("osascript").args(["-e", &script]).status()
+    } else {
+        std::process::Command::new("zenity").args(["--question", "--title", title, "--text", text]).status()
+    };
+    st.map_or(false, |s| s.success())
+}
+
 /// Uses the system's own dialog tools, to avoid extra dependencies until a port is real.
 pub fn pick_folder(title: &str) -> Option<PathBuf> {
     let out = if cfg!(target_os = "macos") {

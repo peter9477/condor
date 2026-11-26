@@ -114,8 +114,37 @@ fn raw_type(ext: &str) -> Option<&'static str> {
     })
 }
 
+/// Whether a file has both a rendered view and a source view worth switching between.
+pub fn has_source_view(path: &str) -> bool {
+    let ext = ext_of(path);
+    is_markdown(&ext) || matches!(ext.as_str(), "html" | "htm" | "xhtml" | "svg")
+}
+
+/// True if a content URL asks for the source view.
+pub fn is_source_url(url: &str) -> bool {
+    url.split('#').next().and_then(|u| u.split_once('?')).map_or(false, |(_, q)| q.split('&').any(|p| p == "source"))
+}
+
 fn is_markdown(ext: &str) -> bool {
     matches!(ext, "md" | "markdown" | "mdown" | "mkd" | "mdx")
+}
+
+/// Whether Condor shows this file itself; false for binary files (.xlsx, .doc, ...) and
+/// text too large to show, which get Open / Open with... instead. Reads at most 8 KB.
+pub fn previewable(path: &str) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return true };
+    let ext = ext_of(path);
+    if meta.is_dir() || is_markdown(&ext) || raw_type(&ext).is_some() {
+        return true;
+    }
+    if meta.len() > MAX_TEXT {
+        return false;
+    }
+    let mut head = Vec::with_capacity(8192);
+    match std::fs::File::open(path).and_then(|f| f.take(8192).read_to_end(&mut head)) {
+        Ok(_) => !head.contains(&0),
+        Err(_) => true, // the page itself explains the error
+    }
 }
 
 /// Handle a request for `url_path` (path part of the URL), with optional query string.
@@ -129,6 +158,7 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
         );
     };
     let raw = query.map_or(false, |q| q.split('&').any(|p| p == "raw"));
+    let source = query.map_or(false, |q| q.split('&').any(|p| p == "source"));
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) => return message(StatusCode::NOT_FOUND, "Cannot open", &format!("{path}: {e}")),
@@ -137,6 +167,9 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
         return listing(&path, url_path);
     }
     let ext = ext_of(&path);
+    if source {
+        return text_view(&path, &ext, meta.len());
+    }
     // Rendered views of a request that isn't a top-level document (e.g. <img src="x.svg">)
     // still get the raw bytes, since only types we render specially are affected.
     if !raw && is_markdown(&ext) {
@@ -161,13 +194,18 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
             Err(e) => message(StatusCode::INTERNAL_SERVER_ERROR, "Read error", &format!("{path}: {e}")),
         };
     }
-    match read_text(&path, meta.len()) {
+    text_view(&path, &ext, meta.len())
+}
+
+/// A text file as (highlighted, where the language is known) source.
+fn text_view(path: &str, ext: &str, len: u64) -> Resp {
+    match read_text(path, len) {
         Ok(t) => {
-            let body = match highlight::for_file(&ext, &t).and_then(|s| highlight::to_html(&t, s)) {
+            let body = match highlight::for_file(ext, &t).and_then(|s| highlight::to_html(&t, s)) {
                 Some(h) => format!("{}<pre class=\"text src\">{}</pre>", highlight::style_tag(), h),
                 None => format!("<pre class=\"text\">{}</pre>", escape(&t)),
             };
-            html_page(StatusCode::OK, file_name(&path), "text", &body)
+            html_page(StatusCode::OK, file_name(path), "text", &body)
         }
         Err(r) => r,
     }
@@ -395,7 +433,7 @@ fn join_rel(base: &Path, rel: &str) -> Option<PathBuf> {
     Some(out)
 }
 
-/// Turn inline code naming an existing file into a link to it. Looked up relative to the
+/// Turn inline code naming an existing file or folder into a link to it. Looked up relative to the
 /// document's folder, then to the root folder(s) containing it.
 fn link_code_paths<'a>(events: Vec<Event<'a>>, dir: &Path) -> Vec<Event<'a>> {
     let dir_s = dir.to_string_lossy();
@@ -418,7 +456,7 @@ fn link_code_paths<'a>(events: Vec<Event<'a>>, dir: &Path) -> Vec<Event<'a>> {
                 if let Some(rel) = path_like(t) {
                     let found = bases.iter().filter_map(|b| join_rel(b, rel)).find(|p| {
                         lookups += 1;
-                        lookups <= MAX_LOOKUPS && std::fs::metadata(p).map_or(false, |m| m.is_file())
+                        lookups <= MAX_LOOKUPS && std::fs::metadata(p).is_ok()
                     });
                     if let Some(p) = found {
                         let href = paths::path_to_url_path(&p.to_string_lossy());
@@ -444,6 +482,7 @@ mod link_tests {
         assert_eq!(path_like("src/main.rs"), Some("src/main.rs"));
         assert_eq!(path_like("ui/index.html:42:7"), Some("ui/index.html"));
         assert_eq!(path_like("README.md"), Some("README.md"));
+        assert_eq!(path_like("tr-rocket/rcp-102819/"), Some("tr-rocket/rcp-102819/"));
         assert_eq!(path_like("../x/y"), Some("../x/y"));
         for no in ["v1.2", "a b.md", "/etc/passwd", "https://x.org/a", "foo", "x.", ".", "~/a.md"] {
             assert_eq!(path_like(no), None, "{no}");

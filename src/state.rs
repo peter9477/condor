@@ -28,6 +28,8 @@ pub struct EnvState {
     pub scroll: HashMap<String, f64>,
     /// Order of `scroll` keys, most recent last (to cap its size).
     pub scroll_order: Vec<String>,
+    /// Text selection per recently viewed file, as recorded by ui/content.js.
+    pub selection: HashMap<String, serde_json::Value>,
     pub sidebar_width: f64,
     pub window: Option<WinGeom>,
     /// Hide files and folders ignored by git (.gitignore).
@@ -51,6 +53,7 @@ impl Default for EnvState {
             open_file: None,
             scroll: HashMap::new(),
             scroll_order: Vec::new(),
+            selection: HashMap::new(),
             sidebar_width: 300.0,
             window: None,
             hide_ignored: false,
@@ -73,6 +76,7 @@ impl EnvState {
         while self.scroll_order.len() > SCROLL_MEMORY {
             let old = self.scroll_order.remove(0);
             self.scroll.remove(&old);
+            self.selection.remove(&old);
         }
     }
 }

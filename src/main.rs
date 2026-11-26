@@ -49,9 +49,12 @@ enum UserEvent {
     /// The content webview finished loading this URL.
     PageLoaded(String),
     /// Scroll position report: (url, y).
-    Scroll(String, f64),
+    /// Polled view state of the content page: (url, scroll y, selection).
+    Scroll(String, f64, serde_json::Value),
     /// Load this URL in the content webview (e.g. a target=_blank link to a local file).
     LoadContent(String),
+    /// The file shown can't be previewed (binary or too large); offer to open it elsewhere.
+    NoPreview(String),
     /// The open file changed on disk: (path, deleted).
     FileChanged(String, bool),
     /// Reload the content view, first recording this scroll position for the file.
@@ -79,6 +82,10 @@ enum Cmd {
     Restart,
     Back,
     Forward,
+    /// Switch the open file between its rendered and source views.
+    ToggleSource,
+    /// Open a file in another application (`with`: let the user choose which).
+    OpenExternal { path: String, with: bool },
     SetFilters { show_hidden: bool, hide_ignored: bool, viewable_only: bool, excludes: Vec<String> },
 }
 
@@ -93,6 +100,8 @@ struct App {
     next_poll: Instant,
     /// File currently shown in the content view, and whether its saved scroll is still to be applied.
     current: Option<String>,
+    /// Full URL in the content view (its query says rendered or source view).
+    current_url: String,
     restoring: bool,
     last_saved: Option<state::EnvState>,
     /// Device pixel ratio of the UI webview, as it reports it.
@@ -112,6 +121,15 @@ fn log(msg: &str) {
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("condor.log")) {
         let _ = writeln!(f, "{msg}");
+    }
+}
+
+/// Extra tracing, when the CONDOR_DEBUG environment variable is set.
+fn debug(msg: impl FnOnce() -> String) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("CONDOR_DEBUG").is_some()) {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() % 100_000);
+        log(&format!("{t:>5} {}", msg()));
     }
 }
 
@@ -213,6 +231,7 @@ impl App {
     }
 
     fn open_file(&mut self, path: &str) {
+        debug(|| format!("open_file {path}"));
         let url = paths::path_to_url(path);
         let _ = self.content.load_url(&url);
     }
@@ -237,6 +256,7 @@ impl App {
             "env": self.env,
             "update": self.update_ready,
             "roots": self.st.roots,
+            "openWith": platform::CAN_OPEN_WITH,
             "expanded": self.st.expanded,
             "selected": self.st.open_file,
             "sidebar": self.st.sidebar_width,
@@ -319,7 +339,32 @@ impl App {
                 self.send_ui(&json!({"ev": "filter", "filters": self.filter_state()}));
             }
             Cmd::Reload => self.reload_keep_scroll(),
-            Cmd::Back => platform::history_go(&self.content, true),
+            Cmd::OpenExternal { path, with } => {
+                if !std::path::Path::new(&path).is_file() {
+                    return;
+                }
+                if with {
+                    platform::open_with(&path);
+                } else if !platform::is_executable(&path)
+                    || platform::confirm(
+                        "Run program?",
+                        &format!("{} is a program or script. Opening it will run it.\n\nRun it?", platform::file_name(&path)),
+                    )
+                {
+                    platform::open_path(&path);
+                }
+            }
+            Cmd::ToggleSource => {
+                if let Some(p) = self.current.clone().filter(|p| render::has_source_view(p)) {
+                    let url = paths::path_to_url(&p);
+                    let url = if render::is_source_url(&self.current_url) { url } else { format!("{url}?source") };
+                    let _ = self.content.load_url(&url);
+                }
+            }
+            Cmd::Back => {
+                debug(|| "cmd back".into());
+                platform::history_go(&self.content, true)
+            }
             Cmd::Forward => platform::history_go(&self.content, false),
             Cmd::Dismiss => self.set_banner(false),
             Cmd::AutoReload { path, on } => {
@@ -347,6 +392,7 @@ impl App {
     }
 
     fn on_content_nav(&mut self, url: &str) {
+        debug(|| format!("nav {url}"));
         let path = paths::url_to_path(url);
         if path != self.current {
             self.current = path.clone();
@@ -364,6 +410,18 @@ impl App {
         }
         let auto = path.as_ref().map_or(false, |p| self.st.auto_reload.contains(p));
         self.send_ui(&json!({"ev": "selected", "path": path, "auto": auto}));
+        self.current_url = url.to_string();
+        let can = path.as_deref().map_or(false, render::has_source_view);
+        self.send_ui(&json!({"ev": "view", "can": can, "source": can && render::is_source_url(url)}));
+    }
+
+    fn on_no_preview(&mut self, path: &str) {
+        if self.current.as_deref() != Some(path) || self.banner {
+            return; // moved on, or a change banner is already showing
+        }
+        self.set_banner(true);
+        self.send_ui(&json!({"ev": "banner", "show": true, "kind": "open", "path": path,
+            "openWith": platform::CAN_OPEN_WITH}));
     }
 
     fn set_banner(&mut self, on: bool) {
@@ -418,27 +476,40 @@ impl App {
     /// Tell the UI whether back/forward can go anywhere (unknown on some platforms).
     fn send_history(&self) {
         if let Some((back, fwd)) = platform::history_state(&self.content) {
+            debug(|| format!("history back={back} fwd={fwd}"));
             self.send_ui(&json!({"ev": "history", "back": back, "forward": fwd}));
         }
     }
 
     fn on_page_loaded(&mut self, url: &str) {
+        debug(|| format!("loaded {url}"));
         self.send_history();
+        if let Some(p) = paths::url_to_path(url) {
+            let proxy = self.proxy.clone();
+            std::thread::spawn(move || {
+                if !render::previewable(&p) {
+                    let _ = proxy.send_event(UserEvent::NoPreview(p));
+                }
+            });
+        }
         let path = paths::url_to_path(url);
         if path.is_none() || path != self.current {
             return;
         }
         let p = path.unwrap();
-        if let Some(y) = self.st.scroll.get(&p).copied() {
-            if y > 0.0 {
-                // Retry for a while: images may still be loading and changing the page height.
-                let js = format!(
-                    "(function(y){{var n=0;function f(){{window.scrollTo(0,y);\
-                     if(Math.abs(window.scrollY-y)>2&&n++<30)setTimeout(f,100)}}f()}})({y})"
-                );
-                let _ = self.content.evaluate_script(&js);
-            }
-        }
+        // ui/content.js restores from this session's memory if it has one, else from the
+        // saved state. Pages it doesn't run in (e.g. PDFs) get a plain scroll.
+        let saved = if render::is_source_url(url) {
+            json!({"y": 0})
+        } else {
+            json!({"y": self.st.scroll.get(&p).copied().unwrap_or(0.0), "sel": self.st.selection.get(&p)})
+        };
+        let js = format!(
+            "(function(st){{if(window.__condor){{window.__condor.restore(st);return}}\
+             var n=0;function f(){{window.scrollTo(0,st.y);\
+             if(Math.abs(window.scrollY-st.y)>2&&n++<30)setTimeout(f,100)}}if(st.y>0)f()}})({saved})"
+        );
+        let _ = self.content.evaluate_script(&js);
         self.restoring = false;
         // Give the restore a moment before polling, so we don't record a pre-restore 0.
         self.next_poll = Instant::now() + Duration::from_millis(3500);
@@ -451,11 +522,12 @@ impl App {
         }
         let proxy = self.proxy.clone();
         let _ = self.content.evaluate_script_with_callback(
-            "[location.href, window.scrollY]",
+            "[location.href, window.scrollY, window.__condor ? window.__condor.state().sel : null]",
             move |res| {
                 if let Ok(serde_json::Value::Array(v)) = serde_json::from_str::<serde_json::Value>(&res) {
                     if let (Some(u), Some(y)) = (v.first().and_then(|x| x.as_str()), v.get(1).and_then(|x| x.as_f64())) {
-                        let _ = proxy.send_event(UserEvent::Scroll(u.to_string(), y));
+                        let sel = v.get(2).cloned().unwrap_or_default();
+                        let _ = proxy.send_event(UserEvent::Scroll(u.to_string(), y, sel));
                     }
                 }
             },
@@ -477,8 +549,25 @@ impl App {
         }
     }
 
+    fn on_selection(&mut self, url: &str, sel: serde_json::Value) {
+        let Some(p) = paths::url_to_path(url).filter(|_| !render::is_source_url(url)) else { return };
+        if Some(&p) != self.current.as_ref() || self.restoring {
+            return;
+        }
+        let changed = if sel.is_null() { self.st.selection.remove(&p).is_some() } else {
+            self.st.selection.get(&p) != Some(&sel) && { self.st.selection.insert(p.clone(), sel); true }
+        };
+        if changed {
+            if !self.st.scroll.contains_key(&p) {
+                self.st.set_scroll(&p, 0.0); // keeps the file in the capped recent list
+            }
+            self.mark_dirty();
+        }
+    }
+
     fn on_scroll(&mut self, url: &str, y: f64) {
-        let Some(p) = paths::url_to_path(url) else { return };
+        // Saved positions are for the rendered view (the source view's last only a session).
+        let Some(p) = paths::url_to_path(url).filter(|_| !render::is_source_url(url)) else { return };
         if Some(&p) != self.current.as_ref() || self.restoring || !y.is_finite() {
             return;
         }
@@ -614,6 +703,7 @@ fn main() {
             }
             wry::NewWindowResponse::Deny
         })
+        .with_initialization_script(include_str!("../ui/content.js"))
         .with_on_page_load_handler(move |ev, url| {
             if let PageLoadEvent::Finished = ev {
                 let _ = p_load.send_event(UserEvent::PageLoaded(url));
@@ -627,6 +717,7 @@ fn main() {
     let mut app = App {
         env,
         current: None,
+        current_url: String::new(),
         restoring: false,
         last_saved: None,
         ui_dpr: None,
@@ -667,7 +758,10 @@ fn main() {
                 }
                 UserEvent::ContentNav(url) => app.on_content_nav(&url),
                 UserEvent::PageLoaded(url) => app.on_page_loaded(&url),
-                UserEvent::Scroll(url, y) => app.on_scroll(&url, y),
+                UserEvent::Scroll(url, y, sel) => {
+                    app.on_scroll(&url, y);
+                    app.on_selection(&url, sel);
+                }
                 UserEvent::FileChanged(p, deleted) => app.on_file_changed(&p, deleted),
                 UserEvent::ReloadAt(url, y) => app.on_reload_at(&url, y),
                 UserEvent::UpdateAvailable => {
@@ -680,6 +774,7 @@ fn main() {
                         return;
                     }
                 }
+                UserEvent::NoPreview(path) => app.on_no_preview(&path),
                 UserEvent::LoadContent(url) => {
                     let _ = app.content.load_url(&url);
                 }
