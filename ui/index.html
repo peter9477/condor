@@ -1,0 +1,377 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Condor</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f8; --fg: #1f2328; --muted: #6e7781; --hover: #e8eaed; --sel: #d0e3ff; --cursor: #0969da;
+  --border: #d0d7de; --split: #e1e4e8;
+  --w: 300px;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #181a1f; --fg: #d6dbe1; --muted: #8b949e; --hover: #262a31; --sel: #1f3b63; --cursor: #4493f8;
+          --border: #30363d; --split: #2a2e35; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+  font: 13px/1.4 "Segoe UI", system-ui, sans-serif; user-select: none; }
+#side { position: absolute; left: 0; top: 0; bottom: 0; width: var(--w); display: flex; flex-direction: column; }
+#bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+#bar .title { flex: 1; font-weight: 600; color: var(--muted); letter-spacing: .04em; font-size: 11px; text-transform: uppercase;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#bar button { border: 0; background: none; color: var(--fg); font: inherit; font-size: 15px; width: 26px; height: 24px;
+  border-radius: 4px; cursor: pointer; }
+#bar button:hover { background: var(--hover); }
+#tree { flex: 1; overflow: auto; padding: 4px 0 24px; outline: none; }
+#split { position: absolute; top: 0; bottom: 0; left: var(--w); width: 5px; cursor: col-resize; background: var(--split); }
+#split:hover, #split.drag { background: var(--cursor); }
+.row { display: flex; align-items: center; height: 22px; padding-right: 6px; white-space: nowrap; cursor: default; border: 1px solid transparent; }
+.row:hover { background: var(--hover); }
+.row.sel { background: var(--sel); }
+#tree:focus .row.cursor { border-color: var(--cursor); }
+.tw { width: 16px; flex: none; text-align: center; color: var(--muted); font-size: 10px; }
+.name { overflow: hidden; text-overflow: ellipsis; }
+.root > .row { font-weight: 600; margin-top: 2px; }
+.root > .row .full { font-weight: 400; color: var(--muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
+.row .x { margin-left: auto; visibility: hidden; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 14px; }
+.root > .row:hover .x { visibility: visible; }
+.row .x:hover { color: var(--fg); }
+.note { color: var(--muted); font-style: italic; }
+.err { color: #cf222e; font-style: italic; }
+.hidden { display: none; }
+#empty { padding: 24px 16px; color: var(--muted); }
+#empty button { margin-top: 8px; font: inherit; padding: 4px 10px; }
+.dragover > .row { box-shadow: inset 0 2px 0 var(--cursor); }
+</style>
+</head>
+<body>
+<div id="side">
+  <div id="bar">
+    <span class="title" id="envname">Condor</span>
+    <button id="add" title="Add a folder (root)">+</button>
+    <button id="reload" title="Reload the open file (F5)">&#x21bb;</button>
+  </div>
+  <div id="tree" tabindex="0"></div>
+</div>
+<div id="split"></div>
+<script>
+"use strict";
+const post = (o) => window.ipc.postMessage(JSON.stringify(o));
+const tree = document.getElementById("tree");
+const nodes = new Map();      // path -> node element
+const loaded = new Set();     // paths whose children have been listed at least once
+let expanded = new Set();
+let selected = null;
+let cursor = null;            // keyboard cursor (a .node element)
+let roots = [];
+let reveal = false;           // scroll the selected file into view when it first appears
+
+function baseName(p) {
+  const t = p.replace(/[\\/]+$/, "");
+  const i = Math.max(t.lastIndexOf("\\"), t.lastIndexOf("/"));
+  return i >= 0 ? t.slice(i + 1) || t : t;
+}
+
+function makeNode(path, name, dir, depth, isRoot) {
+  const n = document.createElement("div");
+  n.className = "node" + (isRoot ? " root" : "");
+  n.dataset.path = path;
+  n.dataset.dir = dir ? "1" : "";
+  n.dataset.depth = depth;
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.paddingLeft = (depth * 14 + 4) + "px";
+  row.title = path;
+  const tw = document.createElement("span");
+  tw.className = "tw";
+  tw.textContent = dir ? "▸" : "";
+  const nm = document.createElement("span");
+  nm.className = "name";
+  nm.textContent = name;
+  row.append(tw, nm);
+  if (isRoot) {
+    const full = document.createElement("span");
+    full.className = "full name";
+    full.textContent = path;
+    const x = document.createElement("button");
+    x.className = "x";
+    x.title = "Remove this folder from the list";
+    x.textContent = "×";
+    x.addEventListener("click", (e) => { e.stopPropagation(); post({cmd: "removeRoot", path}); });
+    row.append(full, x);
+    row.draggable = true;
+  }
+  n.append(row);
+  if (dir) {
+    const kids = document.createElement("div");
+    kids.className = "kids hidden";
+    n.append(kids);
+  }
+  if (path === selected) {
+    row.classList.add("sel");
+    if (reveal) { reveal = false; setTimeout(() => { row.scrollIntoView({block: "center"}); setCursor(n, false); }, 0); }
+  }
+  nodes.set(path, n);
+  return n;
+}
+
+function kidsOf(n) { return n.querySelector(":scope > .kids"); }
+function rowOf(n) { return n.querySelector(":scope > .row"); }
+
+function setOpen(n, open, user) {
+  if (!n.dataset.dir) return;
+  const path = n.dataset.path;
+  const kids = kidsOf(n);
+  kids.classList.toggle("hidden", !open);
+  rowOf(n).querySelector(".tw").textContent = open ? "▾" : "▸";
+  if (open) {
+    if (!loaded.has(path) && !kids.firstChild) {
+      const l = document.createElement("div");
+      l.className = "row note";
+      l.style.paddingLeft = ((+n.dataset.depth + 1) * 14 + 20) + "px";
+      l.textContent = "loading…";
+      kids.append(l);
+    }
+    // Always re-list on expand so the tree picks up changes on disk.
+    post({cmd: "list", path});
+  }
+  if (user) {
+    if (open) expanded.add(path); else expanded.delete(path);
+    post({cmd: "expand", path, open});
+  }
+}
+
+function onList(msg) {
+  const n = nodes.get(msg.path);
+  if (!n) return;
+  const kids = kidsOf(n);
+  const depth = +n.dataset.depth + 1;
+  loaded.add(msg.path);
+  if (msg.error) {
+    kids.replaceChildren();
+    const e = document.createElement("div");
+    e.className = "row err";
+    e.style.paddingLeft = (depth * 14 + 20) + "px";
+    e.textContent = msg.error;
+    e.title = msg.error;
+    kids.append(e);
+    return;
+  }
+  // Reuse existing child nodes so their own expanded subtrees survive a refresh.
+  const old = new Map();
+  for (const c of kids.children) if (c.dataset && c.dataset.path) old.set(c.dataset.path, c);
+  const frag = [];
+  for (const ent of msg.entries) {
+    let c = old.get(ent.path);
+    if (c && !!c.dataset.dir === ent.dir) {
+      old.delete(ent.path);
+    } else {
+      c = makeNode(ent.path, ent.name, ent.dir, depth, false);
+      if (ent.dir && expanded.has(ent.path)) setOpen(c, true, false);
+    }
+    frag.push(c);
+  }
+  for (const [p, c] of old) forget(c);
+  kids.replaceChildren(...frag);
+  if (!msg.entries.length) {
+    const e = document.createElement("div");
+    e.className = "row note";
+    e.style.paddingLeft = (depth * 14 + 20) + "px";
+    e.textContent = "(empty)";
+    kids.append(e);
+  }
+  if (cursor && !cursor.isConnected) cursor = null;
+}
+
+function forget(n) {
+  for (const d of n.querySelectorAll(".node")) nodes.delete(d.dataset.path);
+  nodes.delete(n.dataset.path);
+}
+
+function renderRoots() {
+  const keep = new Map();
+  for (const c of tree.children) if (c.dataset && c.dataset.path) keep.set(c.dataset.path, c);
+  const els = [];
+  for (const r of roots) {
+    let n = keep.get(r);
+    if (n) keep.delete(r);
+    else {
+      n = makeNode(r, baseName(r), true, 0, true);
+      if (expanded.has(r)) setOpen(n, true, false);
+    }
+    els.push(n);
+  }
+  for (const [, n] of keep) forget(n);
+  tree.replaceChildren(...els);
+  if (!roots.length) {
+    const e = document.createElement("div");
+    e.id = "empty";
+    e.innerHTML = "No folders yet.<br>";
+    const b = document.createElement("button");
+    b.textContent = "Add a folder…";
+    b.onclick = () => post({cmd: "addRoot"});
+    e.append(b);
+    tree.append(e);
+  }
+}
+
+function select(path) {
+  if (selected && nodes.get(selected)) rowOf(nodes.get(selected)).classList.remove("sel");
+  selected = path;
+  const n = path && nodes.get(path);
+  if (n) {
+    rowOf(n).classList.add("sel");
+    if (!cursor) setCursor(n, false);
+    rowOf(n).scrollIntoView({block: "nearest"});
+  }
+}
+
+function setCursor(n, scroll) {
+  if (cursor && cursor.isConnected) rowOf(cursor).classList.remove("cursor");
+  cursor = n;
+  if (n) {
+    rowOf(n).classList.add("cursor");
+    if (scroll) rowOf(n).scrollIntoView({block: "nearest"});
+  }
+}
+
+function activate(n) {
+  if (n.dataset.dir) setOpen(n, kidsOf(n).classList.contains("hidden"), true);
+  else post({cmd: "open", path: n.dataset.path});
+}
+
+tree.addEventListener("click", (e) => {
+  const row = e.target.closest(".row");
+  if (!row || !row.parentElement.classList.contains("node")) return;
+  const n = row.parentElement;
+  setCursor(n, false);
+  activate(n);
+});
+
+function visibleNodes() {
+  const out = [];
+  const walk = (container) => {
+    for (const c of container.children) {
+      if (!c.classList || !c.classList.contains("node")) continue;
+      out.push(c);
+      const k = kidsOf(c);
+      if (k && !k.classList.contains("hidden")) walk(k);
+    }
+  };
+  walk(tree);
+  return out;
+}
+
+tree.addEventListener("keydown", (e) => {
+  const vis = visibleNodes();
+  if (!vis.length) return;
+  let i = cursor ? vis.indexOf(cursor) : -1;
+  const n = cursor;
+  switch (e.key) {
+    case "ArrowDown": setCursor(vis[Math.min(i + 1, vis.length - 1)], true); break;
+    case "ArrowUp": setCursor(vis[Math.max(i - 1, 0)], true); break;
+    case "Home": setCursor(vis[0], true); break;
+    case "End": setCursor(vis[vis.length - 1], true); break;
+    case "PageDown": setCursor(vis[Math.min(i + 20, vis.length - 1)], true); break;
+    case "PageUp": setCursor(vis[Math.max(i - 20, 0)], true); break;
+    case "ArrowRight":
+      if (n && n.dataset.dir) {
+        if (kidsOf(n).classList.contains("hidden")) setOpen(n, true, true);
+        else if (vis[i + 1] && vis[i + 1].parentElement === kidsOf(n)) setCursor(vis[i + 1], true);
+      }
+      break;
+    case "ArrowLeft":
+      if (n && n.dataset.dir && !kidsOf(n).classList.contains("hidden")) setOpen(n, false, true);
+      else if (n && n.parentElement.classList.contains("kids")) setCursor(n.parentElement.parentElement, true);
+      break;
+    case "Enter": case " ": if (n) activate(n); break;
+    case "F5": post({cmd: "reload"}); break;
+    default: return;
+  }
+  e.preventDefault();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "F5" && e.target !== tree) { post({cmd: "reload"}); e.preventDefault(); }
+});
+
+// Reorder roots by dragging their header rows.
+let dragRoot = null;
+tree.addEventListener("dragstart", (e) => {
+  const n = e.target.closest && e.target.closest(".root");
+  if (!n) return;
+  dragRoot = n.dataset.path;
+  e.dataTransfer.effectAllowed = "move";
+});
+tree.addEventListener("dragover", (e) => {
+  const n = e.target.closest && e.target.closest(".root");
+  if (!dragRoot || !n) return;
+  e.preventDefault();
+  for (const r of tree.querySelectorAll(".dragover")) r.classList.remove("dragover");
+  n.classList.add("dragover");
+});
+tree.addEventListener("drop", (e) => {
+  const n = e.target.closest && e.target.closest(".root");
+  for (const r of tree.querySelectorAll(".dragover")) r.classList.remove("dragover");
+  if (!dragRoot || !n) return;
+  e.preventDefault();
+  let to = roots.indexOf(n.dataset.path);
+  post({cmd: "moveRoot", path: dragRoot, to});
+  dragRoot = null;
+});
+tree.addEventListener("dragend", () => { dragRoot = null; });
+
+document.getElementById("add").onclick = () => post({cmd: "addRoot"});
+document.getElementById("reload").onclick = () => post({cmd: "reload"});
+
+// Splitter.
+const split = document.getElementById("split");
+let pending = null;
+function setWidth(w) { document.documentElement.style.setProperty("--w", w + "px"); }
+split.addEventListener("pointerdown", (e) => {
+  split.setPointerCapture(e.pointerId);
+  split.classList.add("drag");
+});
+split.addEventListener("pointermove", (e) => {
+  if (!split.hasPointerCapture(e.pointerId)) return;
+  const w = Math.max(140, Math.min(e.clientX, window.innerWidth - 200));
+  setWidth(w);
+  if (pending === null) {
+    pending = requestAnimationFrame(() => { pending = null; post({cmd: "sidebar", width: w}); });
+  }
+});
+split.addEventListener("pointerup", (e) => {
+  split.releasePointerCapture(e.pointerId);
+  split.classList.remove("drag");
+  const w = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--w"));
+  post({cmd: "sidebar", width: w});
+});
+
+window.condor = {
+  recv(msg) {
+    switch (msg.ev) {
+      case "init":
+        expanded = new Set(msg.expanded);
+        selected = msg.selected;
+        reveal = !!selected;
+        roots = msg.roots;
+        setWidth(msg.sidebar);
+        document.getElementById("envname").textContent = msg.env === "default" ? "Condor" : msg.env;
+        renderRoots();
+        break;
+      case "roots":
+        if (msg.expanded) expanded = new Set(msg.expanded);
+        roots = msg.roots;
+        renderRoots();
+        break;
+      case "list": onList(msg); break;
+      case "selected": select(msg.path); break;
+    }
+  }
+};
+post({cmd: "ready"});
+</script>
+</body>
+</html>
