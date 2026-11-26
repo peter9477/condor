@@ -1,5 +1,5 @@
 //! Per-environment saved state: one JSON file per environment under
-//! %APPDATA%\Condor\environments\<name>.json.
+//! `<config dir>/environments/<name>.json` (on Windows, %APPDATA%\Condor\environments).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -77,19 +77,7 @@ impl EnvState {
     }
 }
 
-pub fn config_dir() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Condor")
-}
-
-pub fn local_data_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|p| PathBuf::from(p).join("Condor"))
-        .unwrap_or_else(|| config_dir())
-}
+pub use crate::platform::{config_dir, local_data_dir};
 
 fn sanitize(name: &str) -> String {
     let s: String = name

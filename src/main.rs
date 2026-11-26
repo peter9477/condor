@@ -5,8 +5,9 @@
 //!   * the UI webview (left, full window underneath): the folder tree, trusted, talks to us via IPC;
 //!   * the content webview (right): shows documents, untrusted, with no IPC at all.
 
-mod paths;
 mod filters;
+mod paths;
+mod platform;
 mod gitfilter;
 mod render;
 mod state;
@@ -23,9 +24,6 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::window::{Window, WindowBuilder};
 use wry::http::{header, Response};
 use wry::{PageLoadEvent, Rect, WebContext, WebView, WebViewBuilder};
-
-#[cfg(windows)]
-use wry::WebViewBuilderExtWindows;
 
 const SPLITTER: f64 = 5.0;
 /// Height (UI CSS px) of the "file changed" banner above the content view.
@@ -102,36 +100,6 @@ fn log(msg: &str) {
     }
 }
 
-fn open_external(url: &str) {
-    let lower = url.to_ascii_lowercase();
-    if !(lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")) {
-        return;
-    }
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .spawn();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
-}
-
-/// Read a directory on a worker thread and report back.
-fn hidden_attr(_e: &std::fs::DirEntry) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-        // Cheap on Windows: the attributes come with the directory listing.
-        return _e.metadata().map_or(false, |m| m.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0);
-    }
-    #[allow(unreachable_code)]
-    false
-}
-
 /// Read a directory on a worker thread and report back.
 fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
@@ -148,7 +116,7 @@ fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<
                         }
                         let name = e.file_name().to_string_lossy().into_owned();
                         let p = e.path();
-                        if !keep.keep(&p, &name, is_dir, hidden_attr(&e)) {
+                        if !keep.keep(&p, &name, is_dir, platform::is_hidden(&e, &name)) {
                             return None;
                         }
                         Some((is_dir, name, p.to_string_lossy().into_owned()))
@@ -169,26 +137,6 @@ fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<
         };
         let _ = proxy.send_event(UserEvent::Listed(msg.to_string()));
     });
-}
-
-/// Normalise a folder path given by the user or the command line.
-fn normalise_root(p: &str) -> String {
-    let p = p.trim().trim_matches('"').replace('/', "\\");
-    let abs = std::path::Path::new(&p);
-    let p = if abs.is_absolute() || p.starts_with("\\\\") {
-        p
-    } else {
-        std::env::current_dir()
-            .map(|c| c.join(&p).to_string_lossy().into_owned())
-            .unwrap_or(p)
-    };
-    let p = p.strip_prefix("\\\\?\\").map(|s| s.to_string()).unwrap_or(p);
-    // Keep "C:\" but drop other trailing separators.
-    if p.len() > 3 && p.ends_with('\\') { p.trim_end_matches('\\').to_string() } else { p }
-}
-
-fn file_title(path: &str) -> &str {
-    path.trim_end_matches('\\').rsplit('\\').next().unwrap_or(path)
 }
 
 impl App {
@@ -303,11 +251,8 @@ impl App {
                 self.layout();
             }
             Cmd::AddRoot => {
-                #[cfg(windows)]
-                let picked = rfd::FileDialog::new().set_title("Add folder to Condor").pick_folder();
-                #[cfg(not(windows))]
-                let picked: Option<std::path::PathBuf> = None;
-                if let Some(p) = picked {
+                // Blocks this thread while the dialog is open, like any modal dialog.
+                if let Some(p) = platform::pick_folder("Add folder to Condor") {
                     self.add_root(&p.to_string_lossy());
                 }
             }
@@ -315,8 +260,7 @@ impl App {
                 self.st.roots.retain(|r| r != &path);
                 self.rebuild_filters();
                 // Forget saved expansion under that root, so re-adding starts fresh.
-                let prefix = format!("{}\\", path.trim_end_matches('\\'));
-                self.st.expanded.retain(|e| e != &path && !e.starts_with(&prefix));
+                self.st.expanded.retain(|e| !platform::is_under(e, &path));
                 self.send_ui(&json!({"ev": "roots", "roots": self.st.roots}));
                 self.mark_dirty();
             }
@@ -355,7 +299,7 @@ impl App {
     }
 
     fn add_root(&mut self, p: &str) {
-        let p = normalise_root(p);
+        let p = platform::normalise_path(p);
         if !self.st.roots.iter().any(|r| r.eq_ignore_ascii_case(&p)) {
             self.st.roots.push(p.clone());
             self.st.expanded.insert(p);
@@ -373,7 +317,7 @@ impl App {
             self.restoring = self.current.as_ref().map_or(false, |p| self.st.scroll.contains_key(p));
         }
         let title = match &path {
-            Some(p) => format!("{} - Condor", file_title(p)),
+            Some(p) => format!("{} - Condor", platform::file_name(p)),
             None => "Condor".to_string(),
         };
         self.window.set_title(&title);
@@ -510,7 +454,7 @@ fn main() {
     let (env, start_path) = parse_args();
     let mut st = state::load(&env);
     if let Some(p) = start_path {
-        let p = normalise_root(&p);
+        let p = platform::normalise_path(&p);
         if !st.roots.iter().any(|r| r.eq_ignore_ascii_case(&p)) {
             st.roots.push(p.clone());
             st.expanded.insert(p);
@@ -535,15 +479,12 @@ fn main() {
     }
     let window = wb.build(&event_loop).expect("create window");
 
-    let mut ctx = WebContext::new(Some(state::local_data_dir().join("WebView2")));
+    let mut ctx = WebContext::new(Some(state::local_data_dir().join(platform::WEBVIEW_DATA)));
 
     // UI webview: our own trusted page, the only one with IPC.
     let p_ipc = proxy.clone();
-    let ui_origin = format!("http://{}.localhost/", paths::UI_SCHEME);
-    let ui_builder = WebViewBuilder::new_with_web_context(&mut ctx);
-    #[cfg(windows)]
-    let ui_builder = ui_builder.with_browser_accelerator_keys(false);
-    let ui_builder = ui_builder
+    let ui_origin = format!("{}/", platform::scheme_origin(paths::UI_SCHEME));
+    let ui_builder = platform::tune_ui_webview(WebViewBuilder::new_with_web_context(&mut ctx))
         .with_url(format!("{}://localhost/", paths::UI_SCHEME))
         .with_custom_protocol(paths::UI_SCHEME.into(), |_id, _req| {
             Response::builder()
@@ -556,7 +497,7 @@ fn main() {
             if url.starts_with(&ui_origin) {
                 true
             } else {
-                open_external(&url);
+                platform::open_external(&url);
                 false
             }
         })
@@ -601,7 +542,7 @@ fn main() {
             } else if url.starts_with("about:") || url.starts_with("data:") || url.starts_with("blob:") {
                 true
             } else {
-                open_external(&url);
+                platform::open_external(&url);
                 false
             }
         })
@@ -609,7 +550,7 @@ fn main() {
             if url.starts_with(&fo2) {
                 let _ = p_new.send_event(UserEvent::LoadContent(url));
             } else {
-                open_external(&url);
+                platform::open_external(&url);
             }
             wry::NewWindowResponse::Deny
         })

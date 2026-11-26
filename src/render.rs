@@ -71,7 +71,7 @@ fn message(status: StatusCode, title: &str, msg: &str) -> Resp {
 }
 
 fn ext_of(path: &str) -> String {
-    let name = path.rsplit('\\').next().unwrap_or(path);
+    let name = crate::platform::file_name(path);
     match name.rfind('.') {
         Some(i) if i > 0 => name[i + 1..].to_ascii_lowercase(),
         _ => String::new(),
@@ -79,7 +79,7 @@ fn ext_of(path: &str) -> String {
 }
 
 fn file_name(path: &str) -> &str {
-    path.trim_end_matches('\\').rsplit('\\').next().unwrap_or(path)
+    crate::platform::file_name(path)
 }
 
 /// Content type for files served raw.

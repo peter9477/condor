@@ -2,6 +2,7 @@
 //! user-defined exclude patterns. Directories are never hidden by the file-type filter.
 
 use crate::gitfilter;
+use crate::platform;
 use crate::state::EnvState;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::HashSet;
@@ -38,7 +39,7 @@ impl Filters {
                     let _ = b.add_line(None, p);
                 }
                 if let Ok(g) = b.build() {
-                    excludes.push((root.to_ascii_lowercase(), g));
+                    excludes.push((root.clone(), g));
                 }
             }
         }
@@ -52,10 +53,9 @@ impl Filters {
     }
 
     fn exclude_for(&self, dir: &str) -> Option<&Gitignore> {
-        let d = dir.to_ascii_lowercase();
         self.excludes
             .iter()
-            .filter(|(r, _)| d == *r || d.starts_with(&format!("{}\\", r.trim_end_matches('\\'))))
+            .filter(|(r, _)| platform::is_under(dir, r))
             .max_by_key(|(r, _)| r.len())
             .map(|(_, g)| g)
     }
@@ -78,8 +78,9 @@ pub struct DirFilter<'a> {
 }
 
 impl DirFilter<'_> {
-    pub fn keep(&self, path: &Path, name: &str, is_dir: bool, hidden_attr: bool) -> bool {
-        if !self.f.show_hidden && (name.starts_with('.') || hidden_attr) {
+    /// `hidden`: from `platform::is_hidden`.
+    pub fn keep(&self, path: &Path, name: &str, is_dir: bool, hidden: bool) -> bool {
+        if !self.f.show_hidden && hidden {
             return false;
         }
         if self.f.viewable_only && !is_dir {
