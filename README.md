@@ -79,7 +79,7 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
 
 Built in Rust on [wry](https://github.com/tauri-apps/wry) and [tao](https://github.com/tauri-apps/tao)
 (the window and webview crates underneath Tauri), using the WebView2 runtime that ships with Windows.
-The exe is about 1 MB.
+The exe is about 6 MB, most of it the bundled document libraries (pdf.js, docx-preview).
 
 ## Usage
 
