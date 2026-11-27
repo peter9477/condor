@@ -6,6 +6,8 @@
 import * as pdfjs from "/__condor/pdfjs/pdf.min.mjs";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/__condor/pdfjs/pdf.worker.min.mjs";
+// Building: ui/content.js holds a bookmark's goto until again().
+window.__condorBusy = true;
 
 const out = document.getElementById("pages");
 const msg = document.getElementById("msg");
@@ -20,6 +22,7 @@ let pdf = null;
 const pages = [];       // {n, w, h (points), div, canvas, text, links, drawn (scale), task}
 
 function fail(title, text) {
+  window.__condorBusy = false;
   out.innerHTML = "";
   msg.hidden = false;
   msg.innerHTML = "";
@@ -469,6 +472,64 @@ addEventListener("keydown", (e) => {
   }
 }, true);
 
+// ----- Bookmarks (ui/content.js asks): a place is a page and points down it, so it holds at
+// any zoom.
+window.__condorLocate = () => {
+  if (!pages.length) return null;
+  const s = getSelection();
+  let i, py;
+  if (s && !s.isCollapsed) {
+    const r = s.getRangeAt(0).getBoundingClientRect();
+    i = 0;
+    pages.forEach((p, j) => { if (p.div.getBoundingClientRect().top <= r.top + 1) i = j; });
+    py = Math.max(0, (r.top - pages[i].div.getBoundingClientRect().top) / scale);
+  } else {
+    const a = place() || {i: 0, f: 0};
+    i = a.i;
+    py = a.f * pages[i].h;
+  }
+  return {page: i + 1, py: Math.round(py), frac: (i + py / pages[i].h) / pages.length, label: "p. " + (i + 1)};
+};
+window.__condorGoto = (b) => {
+  if (!pages.length) return false;
+  const at = b.at || {};
+  let i, py;
+  if (at.page) {
+    i = Math.min(pages.length, at.page) - 1;
+    py = at.py || 0;
+  } else {
+    // Made in another view (the built-in Word view): as far through.
+    const x = Math.max(0, Math.min(0.9999, b.frac || 0)) * pages.length;
+    i = Math.floor(x);
+    py = (x - i) * pages[i].h;
+  }
+  goTo(i, Math.max(0, py - innerHeight / 3 / scale));
+  if (b.text && at.sel !== null) selectText(i, b.text);
+  return true;
+};
+// Select `text` on page i (or the next or one before), once drawn.
+async function selectText(i, text) {
+  const want = text.toLowerCase().replace(/\s+/g, " ").trim();
+  if (!want) return;
+  for (const j of [i, i + 1, i - 1]) {
+    const p = pages[j];
+    if (!p) continue;
+    const t = await pageText(p);
+    let k = t.lower.indexOf(want), len = want.length;
+    if (k < 0) { k = t.lower.indexOf(want.slice(0, 60)); len = Math.min(want.length, t.lower.length - k); }
+    if (k < 0) continue;
+    await draw(p);
+    const r = rangeOf({p, start: k, end: k + len});
+    if (!r) return;
+    const s = getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    const box = r.getBoundingClientRect();
+    if (box.top < 40 || box.bottom > innerHeight - 20) scrollBy({top: box.top - innerHeight / 3, behavior: "instant"});
+    return;
+  }
+}
+
 // The page mostly in view: the last one starting above a third of the way down (or the last
 // page, at the very bottom).
 function showPage() {
@@ -511,6 +572,7 @@ function showPage() {
   addEventListener("scroll", () => { redraw(); showPage(); }, {passive: true});
   // Back where the reader was (ui/content.js), else at a page asked for (#page=N, from the
   // built-in Word view).
+  window.__condorBusy = false;
   const want = /^#page=(\d+)/.exec(location.hash);
   if (window.__condor && window.__condor.hasSession()) window.__condor.again();
   else if (want) goTo(+want[1] - 1);

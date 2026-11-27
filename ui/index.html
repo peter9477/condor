@@ -167,6 +167,66 @@ body:not(.show-hid) .node.hid { display: none; }
 #menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
 .pbar .b-star.on { color: #d4a017; background: none; }
 .pbar .b-tags { font-size: 13px; font-weight: 600; }
+/* Bookmarks: the viewer (Ctrl+K) and the editor (Ctrl+D) cover the window, and Condor hides
+   the documents under them (they're separate views on top of this page). */
+.bm-overlay { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.28); display: flex; justify-content: center;
+  align-items: flex-start; padding-top: 5vh; }
+.bm-overlay.hidden { display: none; }
+.bm-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.35);
+  width: min(940px, 94vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
+.bm-box.small { width: min(540px, 94vw); }
+.bm-head { display: flex; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid var(--border); }
+.bm-head .ttl { font-weight: 600; font-size: 14px; }
+.bm-head .spacer { flex: 1; }
+.bm-overlay input, .bm-overlay textarea { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg); color: var(--fg); outline: none; user-select: text; }
+.bm-overlay input:focus, .bm-overlay textarea:focus { border-color: var(--cursor); }
+#bm-q { flex: 1; font-size: 14px; }
+.bm-sort { display: flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; flex: none; }
+.bm-sort button { border: 0; background: none; color: var(--fg); font: inherit; font-size: 12px; padding: 4px 9px; cursor: pointer; }
+.bm-sort button + button { border-left: 1px solid var(--border); }
+.bm-sort button.on { background: var(--sel); color: var(--cursor); }
+.bm-x { border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; width: 28px; height: 28px; border-radius: 5px; flex: none; }
+.bm-x:hover { background: var(--hover); color: var(--fg); }
+#bm-tags { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+#bm-tags.hidden { display: none; }
+#bm-tags .tag { margin: 0; cursor: pointer; line-height: 20px; padding: 0 8px; border: 1px solid transparent; opacity: .75; }
+#bm-tags .tag.on { border-color: currentColor; opacity: 1; font-weight: 600; }
+.tag.bt { border-radius: 3px; }
+#bm-list { overflow: auto; flex: 1; padding: 4px 0; min-height: 80px; }
+.bm-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 14px; padding: 6px 12px; cursor: pointer;
+  border-left: 3px solid transparent; }
+.bm-row:hover { background: var(--hover); }
+.bm-row.cur { background: var(--sel); border-left-color: var(--cursor); }
+.bm-line { display: flex; align-items: center; min-width: 0; gap: 2px; }
+.bm-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bm-text { color: var(--muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bm-meta { grid-column: 2; grid-row: 1 / span 2; text-align: right; color: var(--muted); font-size: 12px; white-space: nowrap;
+  display: flex; flex-direction: column; align-items: flex-end; justify-content: center; }
+.bm-meta .f { color: var(--fg); max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+.bm-flag { color: #c2410c; font-weight: 600; margin-left: 6px; }
+.bm-del { color: #c2410c; font-weight: 600; }
+.bm-acts { display: flex; gap: 2px; margin-left: 8px; visibility: hidden; }
+.bm-row:hover .bm-acts, .bm-row.cur .bm-acts { visibility: visible; }
+.bm-acts button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; border-radius: 4px; padding: 0 4px; }
+.bm-acts button:hover { background: var(--hover); color: var(--fg); }
+.bm-empty { padding: 28px; color: var(--muted); text-align: center; line-height: 1.7; }
+.bm-foot { padding: 6px 12px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--border); }
+mark.fz { background: none; color: var(--cursor); font-weight: 700; }
+.bme-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.bme-where { color: var(--muted); }
+.bme-text { margin: 0; padding: 6px 10px; border-left: 3px solid var(--border); color: var(--muted); font-style: italic;
+  max-height: 7.5em; overflow: auto; white-space: pre-wrap; user-select: text; }
+.bme-known { display: flex; flex-wrap: wrap; gap: 4px; }
+.bme-known .tag { margin: 0; cursor: pointer; opacity: .7; }
+.bme-known .tag:hover { opacity: 1; }
+.bme-btns { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.bme-btns .spacer { flex: 1; }
+.bme-btns button { font: inherit; padding: 4px 14px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); cursor: pointer; }
+.bme-btns button:hover { background: var(--hover); }
+.bme-btns .primary { background: var(--cursor); border-color: var(--cursor); color: #fff; }
+.bme-btns .bme-del { color: #c2410c; }
+.pbar .b-bm, #bar #bmbtn { display: flex; align-items: center; justify-content: center; }
 </style>
 </head>
 <body>
@@ -174,6 +234,7 @@ body:not(.show-hid) .node.hid { display: none; }
   <div id="bar">
     <button id="update" class="hidden" title="A new version of Condor is installed: restart into it (keeps your place)">Restart</button>
     <span class="spacer"></span>
+    <button id="bmbtn" title="Bookmarks (Ctrl+K)"><svg width="13" height="15" viewBox="0 0 13 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2 1.5h9v12l-4.5-3.2L2 13.5z"/></svg></button>
     <button id="filter" title="Filters: hidden files, file types, exclusions">&#x29e9;</button>
     <button id="add" title="Add a folder (root)">+</button>
     <button id="gear" title="Settings (shared by all Condor windows)"><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><mask id="gear-hole"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="12" r="3.2" fill="#000"/></mask><g fill="currentColor" mask="url(#gear-hole)"><circle cx="12" cy="12" r="7.2"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(45 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(90 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(135 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(180 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(225 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(270 12 12)"/><rect x="10.1" y="1.6" width="3.8" height="5" rx="1" transform="rotate(315 12 12)"/></g></svg></button>
@@ -227,6 +288,31 @@ body:not(.show-hid) .node.hid { display: none; }
   <button id="m-copypath">Copy path <span class="kbd">Ctrl+Shift+C</span></button>
 </div>
 <div id="flash" class="hidden"></div>
+<div id="bmv" class="bm-overlay hidden">
+  <div class="bm-box">
+    <div class="bm-head">
+      <input id="bm-q" type="text" spellcheck="false" placeholder="Search bookmarks: descriptions, text, tags, files (letters in order)">
+      <div class="bm-sort"><button data-s="recent" title="Most recently opened first">Recent</button><button data-s="added" title="Newest first">Added</button><button data-s="file" title="By file, then where in it">File</button></div>
+      <button class="bm-x" title="Close (Esc)">&#x00d7;</button>
+    </div>
+    <div id="bm-tags" class="hidden"></div>
+    <div id="bm-list"></div>
+    <div class="bm-foot">&#x2191;&#x2193; choose &#xb7; Enter or click: go there &#xb7; F2 edit &#xb7; Del delete &#xb7; Esc close &#xb7; Ctrl+D in a document bookmarks the place or the selected text</div>
+  </div>
+</div>
+<div id="bme" class="bm-overlay hidden">
+  <div class="bm-box small">
+    <div class="bm-head"><span class="ttl"></span><span class="spacer"></span><button class="bm-x" title="Cancel (Esc)">&#x00d7;</button></div>
+    <div class="bme-body">
+      <div class="bme-where"></div>
+      <blockquote class="bme-text"></blockquote>
+      <textarea id="bme-desc" rows="2" spellcheck="true" placeholder="Description (optional)"></textarea>
+      <input id="bme-tags" type="text" spellcheck="false" placeholder="Tags, separated by spaces or commas (bookmark tags, apart from file tags)">
+      <div class="bme-known"></div>
+      <div class="bme-btns"><button class="bme-del">Delete</button><span class="spacer"></span><button class="bme-cancel">Cancel</button><button class="bme-save primary" title="Save (Enter in Tags, or Ctrl+Enter)">Save</button></div>
+    </div>
+  </div>
+</div>
 <template id="pane-tpl">
   <div class="pgroup">
     <div class="pframe"></div>
@@ -237,6 +323,7 @@ body:not(.show-hid) .node.hid { display: none; }
       <button class="b-copy" title="Copy the selection, or the whole document"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h1"/></svg></button>
       <button class="b-star" title="Star this file">&#x2606;</button>
       <button class="b-tags" title="Tags">#</button>
+      <button class="b-bm" title="Bookmark this place or the selected text (Ctrl+D)"><svg width="13" height="15" viewBox="0 0 13 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2 1.5h9v12l-4.5-3.2L2 13.5z"/></svg></button>
       <span class="office hidden"></span>
       <button class="b-src hidden" title="View source (Ctrl+U)">&lt;/&gt;</button>
       <button class="b-auto" title="Reload this file automatically when it changes">AUTO</button>
@@ -804,6 +891,7 @@ function paneEl(id) {
   q(".b-pop").onclick = () => send("popOut");
   q(".b-close").onclick = () => send("closePane");
   q(".b-star").onclick = () => { if (p.state.file) toggleStar(p.state.file, false); };
+  q(".b-bm").onclick = () => { if (p.state.file) send("bookmarkAdd"); };
   q(".b-tags").onclick = (e) => {
     if (!p.state.file) return;
     const r = e.currentTarget.getBoundingClientRect();
@@ -910,6 +998,7 @@ function showPaneTags(id) {
   const t = tagsOf(f);
   const star = p.group.querySelector(".b-star"), tg = p.group.querySelector(".b-tags");
   star.disabled = tg.disabled = !f;
+  p.group.querySelector(".b-bm").disabled = !f;
   const on = t.includes(STAR);
   star.classList.toggle("on", on);
   star.textContent = on ? "\u2605" : "\u2606";
@@ -1319,6 +1408,332 @@ window.addEventListener("resize", () => {
   if (devicePixelRatio !== lastDpr) { lastDpr = devicePixelRatio; post({cmd: "sidebar", width: currentWidth(), dpr: devicePixelRatio}); }
 });
 
+// ----- Bookmarks ---------------------------------------------------------------------------
+// Places in documents, kept in the environment, with a description and tags of their own (a
+// namespace apart from file tags). Ctrl+D (or a pane's bookmark button) asks the document where
+// it is and opens the editor on that; Ctrl+K (or the sidebar's button) opens the viewer.
+let bookmarks = [];
+let bmStatus = {};           // id -> "changed" | "missing" (the file since the bookmark was made)
+const bmv = document.getElementById("bmv"), bme = document.getElementById("bme");
+const bmQ = document.getElementById("bm-q"), bmList = document.getElementById("bm-list"), bmTagsEl = document.getElementById("bm-tags");
+let bmSort = "recent";
+try { bmSort = localStorage.getItem("condor-bm-sort") || "recent"; } catch (e) {}
+let bmTagFilter = new Set();
+let bmShown = [];            // the rows in order: {b, el}
+let bmCur = 0;
+let bmDelArmed = null;       // id awaiting a second Del
+let bmFromKey = false;       // opened by Ctrl+K / Ctrl+D (from a document): Esc gives it back the keyboard
+let bmReturn = null;         // the element to give the keyboard back to otherwise
+
+function bmModal() {
+  post({cmd: "modal", on: !bmv.classList.contains("hidden") || !bme.classList.contains("hidden")});
+}
+function baseName(p) { return p.split(/[\\/]/).pop(); }
+function ago(t) {
+  const s = Math.max(0, Date.now() / 1000 - t);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + " min ago";
+  if (s < 86400) return Math.floor(s / 3600) + " h ago";
+  if (s < 86400 * 30) return Math.floor(s / 86400) + " d ago";
+  return new Date(t * 1000).toLocaleDateString();
+}
+function bmTagList() {
+  const set = new Set();
+  for (const b of bookmarks) for (const t of b.tags || []) set.add(t);
+  return [...set].sort((a, b) => a.localeCompare(b, undefined, {sensitivity: "base"}));
+}
+function bmTagEl(t) { const e = tagEl(t); e.classList.add("bt"); return e; }
+
+// Fuzzy match: each word of the query must appear as letters in order (not necessarily
+// together) in the bookmark's description, tags, file name or text. Returns a score (higher is
+// better: runs of letters and word starts count most) and the matched positions, or null.
+function fuzzy(hay, q) {
+  const lower = hay.toLowerCase(), pos = [];
+  let score = 0;
+  for (const word of q.toLowerCase().split(/\s+/).filter(Boolean)) {
+    // Try starting at each occurrence of the first letter (up to a few), keep the best.
+    let best = null;
+    for (let start = lower.indexOf(word[0]), tries = 0; start >= 0 && tries < 12; start = lower.indexOf(word[0], start + 1), tries++) {
+      const got = [start];
+      let s = 1 + (start === 0 || /[^a-z0-9]/.test(lower[start - 1]) ? 6 : 0), i = start + 1;
+      for (let k = 1; k < word.length; k++) {
+        const j = lower.indexOf(word[k], i);
+        if (j < 0) { s = -1; break; }
+        s += j === got[got.length - 1] + 1 ? 5 : /[^a-z0-9]/.test(lower[j - 1]) ? 3 : 1;
+        got.push(j);
+        i = j + 1;
+      }
+      if (s >= 0 && (!best || s > best.s)) best = {s, got};
+    }
+    if (!best) return null;
+    score += best.s;
+    pos.push(...best.got);
+  }
+  return {score, pos: new Set(pos)};
+}
+// Text with the matched letters (positions from `at` in the searched string) marked.
+function marked(text, pos, at) {
+  const f = document.createDocumentFragment();
+  if (!pos) { f.append(text); return f; }
+  let run = "", inMark = false;
+  const flush = () => {
+    if (!run) return;
+    if (inMark) { const m = document.createElement("mark"); m.className = "fz"; m.textContent = run; f.append(m); } else f.append(run);
+    run = "";
+  };
+  for (let i = 0; i < text.length; i++) {
+    const on = pos.has(at + i);
+    if (on !== inMark) { flush(); inMark = on; }
+    run += text[i];
+  }
+  flush();
+  return f;
+}
+
+function renderBm() {
+  // Tag chips (any of the chosen ones).
+  const all = bmTagList();
+  for (const t of [...bmTagFilter]) if (!all.includes(t)) bmTagFilter.delete(t);
+  bmTagsEl.innerHTML = "";
+  bmTagsEl.classList.toggle("hidden", !all.length);
+  for (const t of all) {
+    const c = bmTagEl(t);
+    c.classList.toggle("on", bmTagFilter.has(t));
+    c.title = "Show only bookmarks with this tag (or the others chosen)";
+    c.onclick = () => { if (bmTagFilter.has(t)) bmTagFilter.delete(t); else bmTagFilter.add(t); renderBm(); bmQ.focus(); };
+    bmTagsEl.append(c);
+  }
+  for (const b of document.querySelectorAll(".bm-sort button")) b.classList.toggle("on", b.dataset.s === bmSort);
+  const q = bmQ.value.trim();
+  let rows = [];
+  for (const b of bookmarks) {
+    if (bmTagFilter.size && !(b.tags || []).some((t) => bmTagFilter.has(t))) continue;
+    const desc = b.desc || "", tagsS = (b.tags || []).join(" "), file = baseName(b.path), text = b.text || "";
+    const parts = [desc, tagsS, file, text];
+    const hay = parts.join("\u0001");
+    const m = q ? fuzzy(hay, q) : null;
+    if (q && !m) continue;
+    const at = [];
+    parts.reduce((o, s) => { at.push(o); return o + s.length + 1; }, 0);
+    rows.push({b, m, at});
+  }
+  const order = {
+    recent: (x, y) => y.b.accessed - x.b.accessed,
+    added: (x, y) => y.b.created - x.b.created,
+    file: (x, y) => x.b.path.localeCompare(y.b.path, undefined, {sensitivity: "base"}) || x.b.frac - y.b.frac,
+  }[bmSort] || ((x, y) => y.b.accessed - x.b.accessed);
+  rows.sort(q ? (x, y) => y.m.score - x.m.score || order(x, y) : order);
+  bmList.innerHTML = "";
+  bmShown = [];
+  if (!rows.length) {
+    const e = document.createElement("div");
+    e.className = "bm-empty";
+    e.textContent = bookmarks.length ? "No bookmarks match." :
+      "No bookmarks yet. In a document, press Ctrl+D (or the bookmark button in its bar) to bookmark the place you're reading, or the text you've selected.";
+    bmList.append(e);
+    return;
+  }
+  for (const r of rows) {
+    const b = r.b, pos = r.m && r.m.pos;
+    const el = document.createElement("div");
+    el.className = "bm-row";
+    const l1 = document.createElement("div");
+    l1.className = "bm-line";
+    const title = document.createElement("span");
+    title.className = "bm-title";
+    if (b.desc) title.append(marked(b.desc, pos, r.at[0]));
+    else title.append(marked(b.text || baseName(b.path), b.text ? pos : null, r.at[3]));
+    l1.append(title);
+    (b.tags || []).forEach((t) => l1.append(bmTagEl(t)));
+    if (bmDelArmed === b.id) {
+      const d = document.createElement("span");
+      d.className = "bm-del";
+      d.textContent = "  Press Del again to delete";
+      l1.append(d);
+    }
+    el.append(l1);
+    const l2 = document.createElement("div");
+    l2.className = "bm-text";
+    if (b.desc && b.text) l2.append(marked(b.text, pos, r.at[3]));
+    el.append(l2);
+    const meta = document.createElement("div");
+    meta.className = "bm-meta";
+    const f = document.createElement("span");
+    f.className = "f";
+    f.title = b.path;
+    f.append(marked(baseName(b.path), pos, r.at[2]), " \u00b7 " + (b.label || ""));
+    const st = bmStatus[b.id];
+    if (st) {
+      const flag = document.createElement("span");
+      flag.className = "bm-flag";
+      flag.textContent = st === "missing" ? "missing" : "changed";
+      flag.title = st === "missing" ? "The file is no longer there" : "The file has changed since this bookmark was made: it opens at the nearest match of its text, or about as far through";
+      f.append(flag);
+    }
+    const when = document.createElement("span");
+    when.textContent = (bmSort === "added" ? "added " + ago(b.created) : "opened " + ago(b.accessed));
+    when.title = "Added " + new Date(b.created * 1000).toLocaleString() + "\nLast opened " + new Date(b.accessed * 1000).toLocaleString();
+    const acts = document.createElement("span");
+    acts.className = "bm-acts";
+    const ed = document.createElement("button");
+    ed.textContent = "\u270e";
+    ed.title = "Edit (F2)";
+    ed.onclick = (e) => { e.stopPropagation(); openBme(b, false); };
+    const del = document.createElement("button");
+    del.textContent = "\u00d7";
+    del.title = "Delete (Del)";
+    del.onclick = (e) => { e.stopPropagation(); post({cmd: "bookmarkDelete", id: b.id}); };
+    acts.append(ed, del);
+    const l = document.createElement("div");
+    l.style.display = "flex";
+    l.append(when, acts);
+    meta.append(f, l);
+    el.append(meta);
+    el.onclick = () => goBm(b);
+    el.onmousemove = () => { const i = bmShown.findIndex((x) => x.el === el); if (i !== bmCur) setBmCur(i, false); };
+    bmList.append(el);
+    bmShown.push({b, el});
+  }
+  setBmCur(Math.min(bmCur, bmShown.length - 1), false);
+}
+function setBmCur(i, scroll) {
+  if (!bmShown.length) return;
+  i = Math.max(0, Math.min(bmShown.length - 1, i));
+  if (bmShown[bmCur]) bmShown[bmCur].el.classList.remove("cur");
+  bmCur = i;
+  bmShown[i].el.classList.add("cur");
+  if (scroll !== false) bmShown[i].el.scrollIntoView({block: "nearest"});
+}
+function openBm(fromKey) {
+  if (!bme.classList.contains("hidden")) return;
+  bmFromKey = !!fromKey;
+  bmReturn = fromKey ? null : document.activeElement;
+  bmDelArmed = null;
+  bmv.classList.remove("hidden");
+  bmModal();
+  post({cmd: "bookmarkCheck"});
+  bmQ.select();
+  bmCur = 0;
+  renderBm();
+  bmQ.focus();
+}
+function closeBm(giveBack) {
+  if (bmv.classList.contains("hidden")) return;
+  bmv.classList.add("hidden");
+  bmModal();
+  if (giveBack) {
+    if (bmFromKey) post({cmd: "focusDoc"});
+    else if (bmReturn && bmReturn.focus) bmReturn.focus();
+  }
+}
+function goBm(b) {
+  closeBm(false);
+  post({cmd: "bookmarkGo", id: b.id});
+  const st = bmStatus[b.id];
+  if (st) onFlash({text: st === "missing" ? "That file is no longer there" : "The file has changed since this bookmark was made: showing the nearest match"});
+}
+bmQ.addEventListener("input", () => { bmCur = 0; bmDelArmed = null; renderBm(); });
+bmv.addEventListener("keydown", (e) => {
+  if (e.target.closest && e.target.closest("#bme")) return;
+  const cur = bmShown[bmCur] && bmShown[bmCur].b;
+  if (e.key !== "Delete") bmDelArmed = null;
+  switch (e.key) {
+    case "ArrowDown": setBmCur(bmCur + 1); break;
+    case "ArrowUp": setBmCur(bmCur - 1); break;
+    case "PageDown": setBmCur(bmCur + 10); break;
+    case "PageUp": setBmCur(bmCur - 10); break;
+    case "Enter": if (cur) goBm(cur); break;
+    case "Escape": closeBm(true); break;
+    case "F2": if (cur) openBme(cur, false); break;
+    case "Delete":
+      if (!cur || (e.target === bmQ && bmQ.value && bmQ.selectionStart !== bmQ.value.length)) return;
+      if (bmDelArmed === cur.id) { bmDelArmed = null; post({cmd: "bookmarkDelete", id: cur.id}); }
+      else { bmDelArmed = cur.id; renderBm(); }
+      break;
+    default: return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+});
+bmv.querySelector(".bm-x").onclick = () => closeBm(true);
+bmv.addEventListener("mousedown", (e) => { if (e.target === bmv) closeBm(true); });
+for (const b of document.querySelectorAll(".bm-sort button")) {
+  b.onclick = () => {
+    bmSort = b.dataset.s;
+    try { localStorage.setItem("condor-bm-sort", bmSort); } catch (e) {}
+    renderBm();
+    bmQ.focus();
+  };
+}
+document.getElementById("bmbtn").onclick = () => openBm(false);
+
+// The editor: a new bookmark (from the document's place) or an existing one.
+let bmeDraft = null, bmeNew = false, bmeFromViewer = false;
+const bmeDesc = document.getElementById("bme-desc"), bmeTags = document.getElementById("bme-tags");
+function parseTags(s) {
+  const out = [];
+  for (const t of s.split(/[\s,;]+/)) if (t && !out.includes(t)) out.push(t);
+  return out;
+}
+function openBme(b, isNew) {
+  bmeFromViewer = !bmv.classList.contains("hidden");
+  if (bmeFromViewer) bmv.classList.add("hidden");
+  bmeDraft = Object.assign({}, b);
+  bmeNew = isNew;
+  bme.querySelector(".ttl").textContent = isNew ? "New bookmark" : "Edit bookmark";
+  const where = bme.querySelector(".bme-where");
+  where.textContent = baseName(b.path) + (b.label ? " \u00b7 " + b.label : "");
+  where.title = b.path;
+  const quote = bme.querySelector(".bme-text");
+  const selected = b.at && b.at.sel;
+  quote.textContent = b.text || "";
+  quote.title = selected ? "The selected text" : "Text near the place (nothing was selected)";
+  quote.hidden = !b.text;
+  bmeDesc.value = b.desc || "";
+  bmeTags.value = (b.tags || []).join(" ");
+  bme.querySelector(".bme-del").hidden = isNew;
+  const known = bme.querySelector(".bme-known");
+  known.innerHTML = "";
+  for (const t of bmTagList()) {
+    const c = bmTagEl(t);
+    c.title = "Add this tag";
+    c.onclick = () => { const cur = parseTags(bmeTags.value); if (!cur.includes(t)) bmeTags.value = [...cur, t].join(" "); bmeTags.focus(); };
+    known.append(c);
+  }
+  bme.classList.remove("hidden");
+  bmModal();
+  bmeDesc.focus();
+}
+function closeBme(saved) {
+  bme.classList.add("hidden");
+  if (bmeFromViewer) { bmv.classList.remove("hidden"); renderBm(); bmQ.focus(); }
+  bmModal();
+  if (!bmeFromViewer && bmeNew) post({cmd: "focusDoc"});   // back to reading
+  if (saved && bmeNew) onFlash({text: "Bookmarked (Ctrl+K lists them)"});
+}
+function saveBme() {
+  const b = Object.assign({}, bmeDraft, {desc: bmeDesc.value.trim(), tags: parseTags(bmeTags.value)});
+  post({cmd: "bookmarkSave", bookmark: b});
+  closeBme(true);
+}
+bme.querySelector(".bme-save").onclick = saveBme;
+bme.querySelector(".bme-cancel").onclick = () => closeBme(false);
+bme.querySelector(".bm-x").onclick = () => closeBme(false);
+bme.querySelector(".bme-del").onclick = () => { post({cmd: "bookmarkDelete", id: bmeDraft.id}); closeBme(false); };
+bme.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeBme(false);
+  else if (e.key === "Enter" && (e.ctrlKey || e.target === bmeTags)) saveBme();
+  else return;
+  e.preventDefault();
+  e.stopPropagation();
+});
+// Without system keys (other platforms), the same keys in the sidebar.
+document.addEventListener("keydown", (e) => {
+  if (!e.ctrlKey || e.altKey || e.shiftKey) return;
+  if (e.key === "k" || e.key === "K") { e.preventDefault(); openBm(false); }
+  else if (e.key === "d" || e.key === "D") { e.preventDefault(); post({cmd: "bookmarkAdd"}); }
+});
+
 window.condor = {
   recv(msg) {
     switch (msg.ev) {
@@ -1346,6 +1761,7 @@ window.condor = {
         showable = new Set(msg.showable || []);
         tags = msg.tags || {};
         tagFilter = msg.tagFilter || [];
+        bookmarks = msg.bookmarks || [];
         treeMode = "";
         renderTagbar();
         lastDpr = devicePixelRatio;
@@ -1376,6 +1792,12 @@ window.condor = {
       case "banner": onBanner(msg); break;
       case "flash": onFlash(msg); break;
       case "filter": filters = msg.filters; showFilter(); relistAll(); break;
+      case "bookmarks":
+        if (msg.list) { bookmarks = msg.list; if (!bmv.classList.contains("hidden")) renderBm(); }
+        if (msg.open) openBm(true);
+        break;
+      case "bookmarkNew": openBme(msg.bookmark, true); break;
+      case "bookmarkStatus": bmStatus = msg.status || {}; if (!bmv.classList.contains("hidden")) renderBm(); break;
     }
   }
 };

@@ -218,6 +218,8 @@ async function render(out) {
   }
 }
 
+// Building: ui/content.js holds a bookmark's goto until again() below.
+window.__condorBusy = true;
 (async () => {
   const out = document.getElementById("doc");
   const fit = () => {
@@ -237,6 +239,7 @@ async function render(out) {
     contents(out);
     fit();
     addEventListener("resize", fit);
+    window.__condorBusy = false;
     if (window.__condor) window.__condor.again();
     // Remember the page in view, so the PDF view (LibreOffice's pages match ours) can open there.
     const pages = [...out.querySelectorAll("section.docx")];
@@ -260,6 +263,7 @@ async function render(out) {
       scrollBy({top: tops[to], behavior: "instant"});
     };
   } catch (e) {
+    window.__condorBusy = false;
     out.innerHTML = "";
     const d = document.createElement("div");
     d.className = "msg";

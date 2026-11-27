@@ -13,6 +13,63 @@ pub struct WinGeom {
     pub maximized: bool,
 }
 
+/// A place in a document (ui/content.js's `locate()`), with what the reader said about it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct Bookmark {
+    pub id: u64,
+    pub path: String,
+    /// The view it was made in: "" (the file's usual view), "web" (built-in Word view),
+    /// "pdf" (an Office file's PDF), "source".
+    pub view: String,
+    /// Where: scroll position, selection, page... as the view reported them.
+    pub at: serde_json::Value,
+    /// The text selected when it was made, or text near the place.
+    pub text: String,
+    pub desc: String,
+    pub tags: Vec<String>,
+    /// How far through the document (0..1), for ordering; and a short label ("p. 3", "42%").
+    pub frac: f64,
+    pub label: String,
+    /// Unix seconds.
+    pub created: u64,
+    pub accessed: u64,
+    /// The file when the bookmark was made: size and modification time, and a hash of its
+    /// contents (FNV-1a 64, hex), to tell whether it has changed since.
+    pub sig: String,
+    pub hash: String,
+}
+
+/// A file's size and modification time, as a short string (empty if it can't be read).
+pub fn file_sig(path: &str) -> String {
+    match crate::watch::signature(path) {
+        crate::watch::Sig::Present(t, len) => {
+            let ns = t.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+            format!("{len}-{ns}")
+        }
+        _ => String::new(),
+    }
+}
+
+/// A hash of a file's contents (FNV-1a 64, hex; stable across builds), or None if unreadable.
+pub fn file_hash(path: &str) -> Option<String> {
+    use std::io::Read;
+    let local = crate::vfs::local(path).ok()?;
+    let mut f = std::fs::File::open(local).ok()?;
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        for &b in &buf[..n] {
+            h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+        }
+    }
+    Some(format!("{h:016x}"))
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct EnvState {
@@ -58,6 +115,8 @@ pub struct EnvState {
     pub tags: BTreeMap<String, Tagged>,
     /// Tags the tree is filtered to (shows items with any of them); empty shows everything.
     pub tag_filter: Vec<String>,
+    /// Bookmarks: places in documents, with a description and tags of their own.
+    pub bookmarks: Vec<Bookmark>,
 }
 
 /// The tag that shows as a star.
@@ -108,6 +167,7 @@ impl Default for EnvState {
             popouts: Vec::new(),
             tags: BTreeMap::new(),
             tag_filter: Vec::new(),
+            bookmarks: Vec::new(),
         }
     }
 }

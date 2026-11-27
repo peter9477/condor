@@ -85,8 +85,14 @@ enum UserEvent {
     PageLoaded(PaneId, String),
     /// Esc in a document: put the keyboard back in the tree.
     FocusTree(PaneId),
-    /// F6 (true: tree <-> document) or Ctrl+Shift+E (false: to the tree) in a window (its handle).
-    TreeKey(isize, bool),
+    /// One of Condor's keys (platform::hotkeys) in a window (its handle).
+    Hot(isize, u8),
+    /// A pane's answer to "where are you?" for a new bookmark: [url, ui/content.js locate()].
+    Located(PaneId, serde_json::Value),
+    /// A new bookmark's file: (id, size-and-time, content hash).
+    BookmarkHashed(u64, String, String),
+    /// Which bookmarks' files have changed or gone since they were made: {id: "changed"|"missing"}.
+    BookmarkStatus(serde_json::Value),
     /// Polled view state of a pane: (url, scroll y, selection).
     Scroll(PaneId, String, f64, serde_json::Value),
     /// A document asked to open a local file in a new window ("Open link in new window",
@@ -153,6 +159,18 @@ enum Cmd {
     /// Show the pane's Office file with the Windows previewer or LibreOffice.
     /// Show the pane's Office file with `mode`: for its whole type, or (`file`) for it alone.
     OfficeView { pane: Option<PaneId>, mode: String, #[serde(default)] file: bool },
+    /// The bookmark viewer or editor covers the window (true) or not: hide the documents
+    /// (and any Windows previewer) under it.
+    Modal { on: bool },
+    /// Bookmark the place shown in a pane (the window's focused one by default).
+    BookmarkAdd { pane: Option<PaneId> },
+    /// A new bookmark (id 0) or a changed description and tags.
+    BookmarkSave { bookmark: state::Bookmark },
+    BookmarkDelete { id: u64 },
+    /// Show a bookmark's place: in a pane already showing its file, else the focused pane.
+    BookmarkGo { id: u64 },
+    /// Check which bookmarks' files have changed since (answered with "bookmarkStatus").
+    BookmarkCheck,
     /// F6 from the tree: the keyboard to the document; from elsewhere, to the tree.
     FocusDoc,
     FocusTree,
@@ -178,6 +196,8 @@ struct Shell {
     ui_dpr: Option<f64>,
     panes: Vec<PaneId>,
     focused: PaneId,
+    /// The bookmark viewer or editor covers the window; its documents are hidden.
+    modal: bool,
 }
 
 /// A document view.
@@ -205,6 +225,8 @@ struct Pane {
     /// a preview is reopened at the new size once resizing pauses (`preview_reopen`).
     preview_size: std::cell::Cell<(i32, i32)>,
     preview_reopen: std::cell::Cell<Option<Instant>>,
+    /// A bookmark to show once this file's page has loaded: (file, what goto() takes).
+    goto: Option<(String, serde_json::Value)>,
 }
 
 struct App {
@@ -321,6 +343,10 @@ fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<
 }
 
 /// Build a top-level window, restoring its geometry if it is still on a connected monitor.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 /// The key a file's saved place is kept under: its path, or for the PDF made of an Office file,
 /// the path and `?pdf` (no Windows path has a `?`), since its pages differ from the built-in
 /// view's.
@@ -608,6 +634,7 @@ impl App {
                 loading_shown: false,
                 preview_size: Default::default(),
                 preview_reopen: Default::default(),
+                goto: None,
             },
         );
         if let Some(sh) = self.shells.get_mut(&wid) {
@@ -620,15 +647,15 @@ impl App {
         let default = if kind == Kind::Main { LogicalSize::new(1200.0, 800.0) } else { LogicalSize::new(900.0, 800.0) };
         let window = build_window(target, geom, default);
         if kind != Kind::Main {
-            // F6 / Ctrl+Shift+E in a pop-out: to the main window's tree (see TreeKey).
+            // F6 / Ctrl+Shift+E in a pop-out: to the main window's tree (see on_hotkey).
             let p = self.proxy.clone();
-            platform::tree_hotkey(platform::window_handle(&window), move |h, toggle| {
-                let _ = p.send_event(UserEvent::TreeKey(h, toggle));
+            platform::hotkeys(platform::window_handle(&window), move |h, key| {
+                let _ = p.send_event(UserEvent::Hot(h, key));
             });
         }
         let ui = build_ui(&mut self.ctx, &window, &self.proxy, kind);
         let wid = window.id();
-        self.shells.insert(wid, Shell { kind, ui, window, ui_dpr: None, panes: Vec::new(), focused: 0 });
+        self.shells.insert(wid, Shell { kind, ui, window, ui_dpr: None, panes: Vec::new(), focused: 0, modal: false });
         wid
     }
 
@@ -758,7 +785,7 @@ impl App {
                 size: PhysicalSize::new(w.max(0.0) as u32, h as u32).into(),
             });
             p.rect.set((x as i32, y as i32, w.max(0.0) as i32, h as i32));
-            if let Some(pv) = &p.preview {
+            if let Some(pv) = p.preview.as_ref().filter(|_| !sh.modal) {
                 pv.set_rect(p.rect.get());
                 let size = (w as i32, h as i32);
                 p.preview_reopen.set((size != p.preview_size.get()).then(|| Instant::now() + PREVIEW_REOPEN));
@@ -856,6 +883,7 @@ impl App {
             "filters": self.filter_state(),
             "tags": self.st.tags,
             "tagFilter": self.st.tag_filter,
+            "bookmarks": if kind == Kind::Main { json!(self.st.bookmarks) } else { json!([]) },
             "star": state::STAR,
             // Shown in full in the tree; other files are dimmed (Condor can't preview them).
             "showable": self.showable(),
@@ -893,6 +921,69 @@ impl App {
                 }
             }
             Cmd::FocusTree => self.focus_tree(false),
+            Cmd::Modal { on } => self.set_modal(wid, on),
+            Cmd::BookmarkAdd { pane } => {
+                if let Some(id) = self.pane_of(wid, pane) {
+                    self.locate(id);
+                }
+            }
+            Cmd::BookmarkSave { mut bookmark } => {
+                let now = unix_now();
+                if bookmark.id == 0 {
+                    bookmark.id = self.st.bookmarks.iter().map(|b| b.id).max().unwrap_or(0) + 1;
+                    bookmark.created = now;
+                    bookmark.accessed = now;
+                    // What the file was, to notice changes later (hashing may take a while).
+                    let (id, path, proxy) = (bookmark.id, bookmark.path.clone(), self.proxy.clone());
+                    std::thread::spawn(move || {
+                        let sig = state::file_sig(&path);
+                        if let Some(h) = state::file_hash(&path) {
+                            let _ = proxy.send_event(UserEvent::BookmarkHashed(id, sig, h));
+                        }
+                    });
+                    self.st.bookmarks.push(bookmark);
+                } else if let Some(b) = self.st.bookmarks.iter_mut().find(|b| b.id == bookmark.id) {
+                    b.desc = bookmark.desc;
+                    b.tags = bookmark.tags;
+                }
+                self.mark_dirty();
+                self.send_bookmarks();
+            }
+            Cmd::BookmarkDelete { id } => {
+                self.st.bookmarks.retain(|b| b.id != id);
+                self.mark_dirty();
+                self.send_bookmarks();
+            }
+            Cmd::BookmarkGo { id } => self.go_bookmark(id),
+            Cmd::BookmarkCheck => {
+                // Size and time first; only a file that differs there gets hashed (a copy or
+                // a touch keeps its contents). Each file once.
+                let list: Vec<(u64, String, String, String)> =
+                    self.st.bookmarks.iter().map(|b| (b.id, b.path.clone(), b.sig.clone(), b.hash.clone())).collect();
+                let proxy = self.proxy.clone();
+                std::thread::spawn(move || {
+                    let mut seen: HashMap<String, (String, Option<String>)> = HashMap::new();
+                    let mut out = serde_json::Map::new();
+                    for (id, path, sig, hash) in list {
+                        if hash.is_empty() {
+                            continue; // made before this was kept, or never read
+                        }
+                        let (now, h) = seen.entry(path.clone()).or_insert_with(|| (state::file_sig(&path), None));
+                        if now.is_empty() {
+                            out.insert(id.to_string(), json!("missing"));
+                            continue;
+                        }
+                        if *now == sig {
+                            continue;
+                        }
+                        let h = h.get_or_insert_with(|| state::file_hash(&path).unwrap_or_default());
+                        if *h != hash {
+                            out.insert(id.to_string(), json!("changed"));
+                        }
+                    }
+                    let _ = proxy.send_event(UserEvent::BookmarkStatus(serde_json::Value::Object(out)));
+                });
+            }
             Cmd::Open { path } => {
                 let focused = self.shells.get(&self.main).map(|s| s.focused);
                 if let Some(p) = focused.and_then(|f| self.panes.get(&f)) {
@@ -1439,6 +1530,14 @@ impl App {
         );
         let _ = p.content.evaluate_script(&js);
         p.restoring = false;
+        // A bookmark to show here, once the file's real view has loaded (an Office file first
+        // loads a placeholder that moves on to the built-in or PDF view).
+        let real = !convert::convertible(&f) || render::is_docx_url(url) || render::is_converted_url(url);
+        if real && p.goto.as_ref().map_or(false, |(g, _)| *g == f) {
+            if let Some((_, g)) = p.goto.take() {
+                let _ = p.content.evaluate_script(&format!("window.__condor&&window.__condor.goto({g})"));
+            }
+        }
         // Give the restore a moment before polling, so we don't record a pre-restore 0.
         self.next_poll = Instant::now() + Duration::from_millis(3500);
     }
@@ -1627,8 +1726,8 @@ impl App {
         // (Esc only works where Condor's script runs, not in the PDF viewer or a Windows previewer).
         {
             let p = proxy.clone();
-            platform::tree_hotkey(platform::window_handle(&main_window), move |h, toggle| {
-                let _ = p.send_event(UserEvent::TreeKey(h, toggle));
+            platform::hotkeys(platform::window_handle(&main_window), move |h, key| {
+                let _ = p.send_event(UserEvent::Hot(h, key));
             });
         }
         let mut app = App {
@@ -1657,7 +1756,7 @@ impl App {
             st,
         };
         let ui = build_ui(&mut app.ctx, &main_window, &app.proxy, Kind::Main);
-        app.shells.insert(main, Shell { kind: Kind::Main, ui, window: main_window, ui_dpr: None, panes: Vec::new(), focused: 0 });
+        app.shells.insert(main, Shell { kind: Kind::Main, ui, window: main_window, ui_dpr: None, panes: Vec::new(), focused: 0, modal: false });
         let first = app.st.open_file.clone();
         let id = app.add_pane(main, first.as_deref());
         app.shells.get_mut(&main).unwrap().focused = id;
@@ -1698,22 +1797,20 @@ impl App {
                 }
                 UserEvent::ContentNav(id, url) => self.on_content_nav(id, &url),
                 UserEvent::PageLoaded(id, url) => self.on_page_loaded(id, &url),
-                UserEvent::TreeKey(h, toggle) => {
-                    let from = self.shells.iter().find(|(_, s)| platform::window_handle(&s.window) == h).map(|(w, _)| *w);
-                    match from {
-                        // In a pop-out: to the main window's tree, remembering the pop-out for
-                        // F6 back.
-                        Some(w) if w != self.main => {
-                            self.f6_back = Some(w);
-                            self.focus_tree(true);
-                        }
-                        // The page knows whether the tree has the keyboard; F6 from there goes
-                        // to the document (it posts focusDoc).
-                        Some(_) if toggle => self.send_main(&json!({"ev": "treeKey"})),
-                        Some(_) => self.focus_tree(false),
-                        None => {}
+                UserEvent::Hot(h, key) => {
+                    if let Some(w) = self.shells.iter().find(|(_, s)| platform::window_handle(&s.window) == h).map(|(w, _)| *w) {
+                        self.on_hotkey(w, key);
                     }
                 }
+                UserEvent::Located(id, v) => self.on_located(id, v),
+                UserEvent::BookmarkHashed(id, sig, hash) => {
+                    if let Some(b) = self.st.bookmarks.iter_mut().find(|b| b.id == id) {
+                        b.sig = sig;
+                        b.hash = hash;
+                        self.mark_dirty();
+                    }
+                }
+                UserEvent::BookmarkStatus(v) => self.send_main(&json!({"ev": "bookmarkStatus", "status": v})),
                 UserEvent::FocusTree(id) => {
                     // Esc in a document. From a pop-out, the main window comes forward (and F6
                     // in the tree goes back to the pop-out).
@@ -1806,6 +1903,145 @@ impl App {
             wake = wake.min(t);
         }
         *control_flow = ControlFlow::WaitUntil(wake);
+    }
+
+    /// One of Condor's keys (platform::hotkeys), pressed in window `w`.
+    fn on_hotkey(&mut self, w: WindowId, key: u8) {
+        match key {
+            // In a pop-out: to the main window's tree, remembering the pop-out for F6 back.
+            0 | 1 if w != self.main => {
+                self.f6_back = Some(w);
+                self.focus_tree(true);
+            }
+            // The page knows whether the tree has the keyboard; F6 from there goes to the
+            // document (it posts focusDoc).
+            1 => self.send_main(&json!({"ev": "treeKey"})),
+            0 => self.focus_tree(false),
+            2 => {
+                self.raise_main_ui();
+                self.send_main(&json!({"ev": "bookmarks", "open": true}));
+            }
+            3 => {
+                if let Some(id) = self.shells.get(&w).map(|s| s.focused) {
+                    self.locate(id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The main window to the front, with the keyboard in its UI (for its dialogs).
+    fn raise_main_ui(&self) {
+        if let Some(sh) = self.shells.get(&self.main) {
+            sh.window.set_focus();
+            let _ = sh.ui.focus();
+        }
+    }
+
+    fn set_modal(&mut self, wid: WindowId, on: bool) {
+        let Some(sh) = self.shells.get_mut(&wid) else { return };
+        if sh.modal == on {
+            return;
+        }
+        sh.modal = on;
+        for id in sh.panes.clone() {
+            if let Some(p) = self.panes.get(&id) {
+                match &p.preview {
+                    Some(pv) => pv.set_visible(!on),
+                    None => {
+                        let _ = p.content.set_visible(!on);
+                    }
+                }
+            }
+        }
+        if !on {
+            self.layout(wid);
+        }
+    }
+
+    fn send_bookmarks(&self) {
+        self.send_main(&json!({"ev": "bookmarks", "list": self.st.bookmarks}));
+    }
+
+    /// Ask a pane where it is, for a new bookmark (answered by UserEvent::Located).
+    fn locate(&self, id: PaneId) {
+        let Some(p) = self.panes.get(&id) else { return };
+        if p.current.is_none() {
+            return;
+        }
+        if p.preview.is_some() {
+            self.flash(p.shell, Some(id), "Bookmarks need Condor's own views (Built-in or PDF), not the Windows previewer".into());
+            return;
+        }
+        let proxy = self.proxy.clone();
+        let _ = p.content.evaluate_script_with_callback(
+            "[location.href, window.__condor && window.__condor.locate ? window.__condor.locate() : null]",
+            move |r| {
+                let _ = proxy.send_event(UserEvent::Located(id, serde_json::from_str(&r).unwrap_or_default()));
+            },
+        );
+    }
+
+    /// A pane said where it is: open the bookmark editor on it (in the main window).
+    fn on_located(&mut self, id: PaneId, v: serde_json::Value) {
+        let Some(p) = self.panes.get(&id) else { return };
+        let url = v.get(0).and_then(|u| u.as_str()).unwrap_or("");
+        let loc = v.get(1).cloned().unwrap_or_default();
+        let Some(path) = paths::url_to_path(url).filter(|f| Some(f) == p.current.as_ref()) else { return };
+        if !loc.is_object() {
+            self.flash(p.shell, Some(id), "Can't bookmark a place here".into());
+            return;
+        }
+        let view = if render::is_converted_url(url) {
+            "pdf"
+        } else if render::is_docx_url(url) {
+            "web"
+        } else if render::is_source_url(url) {
+            "source"
+        } else {
+            ""
+        };
+        let draft = json!({"id": 0, "path": path, "view": view, "at": loc["at"], "text": loc["text"],
+            "frac": loc["frac"], "label": loc["label"]});
+        self.raise_main_ui();
+        self.send_main(&json!({"ev": "bookmarkNew", "bookmark": draft}));
+    }
+
+    /// Show a bookmark: in a pane already showing its file (the main window's focused one
+    /// first), else open the file in the main window's focused pane and go there once loaded.
+    fn go_bookmark(&mut self, id: u64) {
+        let Some(b) = self.st.bookmarks.iter_mut().find(|b| b.id == id) else { return };
+        b.accessed = unix_now();
+        let b = b.clone();
+        self.mark_dirty();
+        self.send_bookmarks();
+        let goto = json!({"at": b.at, "text": b.text, "frac": b.frac, "view": b.view});
+        let main_focused = self.shells.get(&self.main).map(|s| s.focused);
+        let mut showing: Vec<(PaneId, WindowId)> =
+            self.panes.iter().filter(|(_, p)| p.current.as_deref() == Some(b.path.as_str())).map(|(i, p)| (*i, p.shell)).collect();
+        showing.sort_by_key(|(i, w)| (Some(*i) != main_focused, *w != self.main, *i));
+        if let Some(&(pid, w)) = showing.first() {
+            let p = &self.panes[&pid];
+            let _ = p.content.evaluate_script(&format!("window.__condor&&window.__condor.goto({goto})"));
+            if let Some(sh) = self.shells.get(&w) {
+                sh.window.set_focus();
+                if sh.focused != pid {
+                    if let Some(s) = self.shells.get_mut(&w) {
+                        s.focused = pid;
+                    }
+                    self.after_focus_change(w);
+                }
+            }
+            let _ = self.panes[&pid].content.focus();
+            return;
+        }
+        let Some(pid) = main_focused else { return };
+        let url = self.url_for(&b.path);
+        if let Some(p) = self.panes.get_mut(&pid) {
+            p.goto = Some((b.path.clone(), goto));
+            let _ = p.content.load_url(&url);
+            let _ = p.content.focus();
+        }
     }
 
     /// The keyboard to the main window's tree (`raise`: bring the window to the front first).

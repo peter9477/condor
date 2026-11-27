@@ -425,6 +425,14 @@ impl Preview {
         }
     }
 
+    /// Hide or show it (while the bookmark viewer covers the window).
+    pub fn set_visible(&self, on: bool) {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNA};
+        unsafe {
+            let _ = ShowWindow(self.host, if on { SW_SHOWNA } else { SW_HIDE });
+        }
+    }
+
     /// Move it (physical pixels, relative to the parent window).
     pub fn set_rect(&self, rect: (i32, i32, i32, i32)) {
         use windows::Win32::Foundation::RECT;
@@ -517,29 +525,30 @@ pub fn metafile_to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-/// F6 (`f(window, true)`) and Ctrl+Shift+E (`f(window, false)`) in `window` (any of Condor's
-/// windows), whatever has the keyboard inside it: a document, the PDF viewer or a Windows
-/// previewer (which keep their keys to themselves). They are system hotkeys registered only
-/// while the window is active, so they never take the keys from other programs.
-pub fn tree_hotkey(window: isize, f: impl Fn(isize, bool) + Send + 'static) {
+/// Condor's keys that work whatever has the keyboard inside its windows (a document, the PDF
+/// viewer, a Windows previewer, which keep their keys to themselves): `f(window, key)` with key
+/// 0 Ctrl+Shift+E (to the tree), 1 F6 (tree <-> document), 2 Ctrl+K (bookmarks), 3 Ctrl+D
+/// (bookmark this place). They are system hotkeys registered only while one of Condor's
+/// windows is active, so they never take the keys from other programs.
+pub fn hotkeys(window: isize, f: impl Fn(isize, u8) + Send + 'static) {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-    use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, VK_F6};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, VK_F6};
     use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, WM_ACTIVATE, WM_HOTKEY, WM_NCACTIVATE, WM_NCDESTROY};
-    const ID: i32 = 0xC0DE; // Ctrl+Shift+E
-    const ID_F6: i32 = 0xC0DF;
-    static CALL: std::sync::Mutex<Option<Box<dyn Fn(isize, bool) + Send>>> = std::sync::Mutex::new(None);
+    const BASE: i32 = 0xC0DE;
+    const KEYS: [(HOT_KEY_MODIFIERS, u32); 4] =
+        [(HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_SHIFT.0), 'E' as u32), (HOT_KEY_MODIFIERS(0), VK_F6.0 as u32), (MOD_CONTROL, 'K' as u32), (MOD_CONTROL, 'D' as u32)];
+    static CALL: std::sync::Mutex<Option<Box<dyn Fn(isize, u8) + Send>>> = std::sync::Mutex::new(None);
     *CALL.lock().unwrap() = Some(Box::new(f));
     fn set(h: HWND, on: bool) {
         unsafe {
-            // Activation arrives as both WM_ACTIVATE and WM_NCACTIVATE: start clean each time.
-            let _ = UnregisterHotKey(Some(h), ID);
-            let _ = UnregisterHotKey(Some(h), ID_F6);
-            if on {
-                let a = RegisterHotKey(Some(h), ID, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'E' as u32);
-                let b = RegisterHotKey(Some(h), ID_F6, MOD_NOREPEAT, VK_F6.0 as u32);
-                if a.is_err() || b.is_err() {
-                    crate::debug(|| format!("hotkeys on {:?}: {:?} {:?}", h.0, a.map_err(|e| e.to_string()), b.map_err(|e| e.to_string())));
+            for (i, (m, vk)) in KEYS.iter().enumerate() {
+                // Activation arrives as both WM_ACTIVATE and WM_NCACTIVATE: start clean each time.
+                let _ = UnregisterHotKey(Some(h), BASE + i as i32);
+                if on {
+                    if let Err(e) = RegisterHotKey(Some(h), BASE + i as i32, *m | MOD_NOREPEAT, *vk) {
+                        crate::debug(|| format!("hotkey {i} on {:?}: {e}", h.0));
+                    }
                 }
             }
         }
@@ -550,9 +559,9 @@ pub fn tree_hotkey(window: isize, f: impl Fn(isize, bool) + Send + 'static) {
             // WM_NCACTIVATE does).
             WM_ACTIVATE => set(h, (wp.0 & 0xFFFF) != 0), // WA_INACTIVE is 0
             WM_NCACTIVATE => set(h, wp.0 != 0),
-            WM_HOTKEY if wp.0 as i32 == ID || wp.0 as i32 == ID_F6 => {
+            WM_HOTKEY if (BASE..BASE + KEYS.len() as i32).contains(&(wp.0 as i32)) => {
                 if let Some(f) = CALL.lock().unwrap().as_ref() {
-                    f(h.0 as isize, wp.0 as i32 == ID_F6);
+                    f(h.0 as isize, (wp.0 as i32 - BASE) as u8);
                 }
                 return LRESULT(0);
             }

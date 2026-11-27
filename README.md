@@ -66,6 +66,18 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   windows is active. In a document, Left/Right
   and Ctrl+PgUp/PgDn page back and forward: a page at a time in the built-in Word view,
   else a screenful (Left/Right not when the document scrolls sideways).
+- Bookmarks: **Ctrl+D** (or the bookmark button in a document's bar) bookmarks the place
+  you're reading, or the text you've selected, with an optional description and tags of
+  their own (apart from file tags). **Ctrl+K** (or the sidebar's bookmark button) lists them
+  with their tags, file, place (page or %) and when last opened, sorted by Recent, Added or
+  File (by file, then where in it); typing filters them by letters in order across
+  descriptions, text, tags and file names (matched letters marked), and the tag chips filter
+  by tag. Enter or a click goes there: in a pane already showing the file, else the focused
+  one, reselecting the text. F2 edits, Del twice deletes. Each bookmark records the file's
+  size, time and a hash of its contents; one whose file has changed since is marked
+  **changed** (and opens at the nearest match of its text), or **missing**. Kept in the
+  environment. Works in Condor's own views (not the Windows previewer); Ctrl+D and Ctrl+K
+  work from anywhere in Condor's windows, like F6.
 - Hiding: right-click → Hide (or "Hidden" in a document's # box) takes a file or folder out
   of the tree and out of search results, e.g. old revisions. The ⊘ N hidden chip above the
   tree shows them again, dimmed, until clicked again, so they can be unhidden.
