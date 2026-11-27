@@ -11,11 +11,13 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   to its root folder. The tree follows along. ← / →, Alt+Left/Right and the mouse's side
   buttons go back and forward.
 - Each document's scroll position and text selection are kept, both while moving between
-  documents and across restarts.
+  documents and across restarts; an Office file keeps one for each way of showing it
+  (built-in, PDF).
 - PDFs show in Condor's own PDF view (the bundled [pdf.js](https://github.com/mozilla/pdf.js)),
   so they keep their place like any other document: pages drawn as they come into view,
   selectable text, working links, the document's bookmarks as a contents menu (☰), a page
-  counter, and zoom (− / +, Ctrl+wheel, Ctrl+= / Ctrl+-, Ctrl+0 to fit the width). **Edge**
+  counter, search (⌕ or Ctrl+F: every match highlighted; Enter / Shift+Enter or F3 step
+  through them, Esc closes), and zoom (− / +, Ctrl+wheel, Ctrl+= / Ctrl+-, Ctrl+0 to fit the width). **Edge**
   (top right) opens the file in Edge's own viewer instead (Back returns).
 - `</>` (or Ctrl+U) switches Markdown, HTML and SVG files between the rendered view and
   highlighted source; each file remembers which view you last used.

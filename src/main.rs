@@ -321,6 +321,17 @@ fn list_dir(path: String, filters: Arc<filters::Filters>, proxy: EventLoopProxy<
 }
 
 /// Build a top-level window, restoring its geometry if it is still on a connected monitor.
+/// The key a file's saved place is kept under: its path, or for the PDF made of an Office file,
+/// the path and `?pdf` (no Windows path has a `?`), since its pages differ from the built-in
+/// view's.
+fn place_key(f: &str, url: &str) -> String {
+    if render::is_converted_url(url) {
+        format!("{f}?pdf")
+    } else {
+        f.to_string()
+    }
+}
+
 fn build_window(target: &EventLoopWindowTarget<UserEvent>, geom: Option<state::WinGeom>, default: LogicalSize<f64>) -> Window {
     let mut wb = WindowBuilder::new().with_title("Condor").with_inner_size(default).with_window_icon(platform::app_icon());
     if let Some(g) = geom {
@@ -1271,7 +1282,7 @@ impl App {
         p.current = path.clone();
         p.url = url.to_string();
         if moved {
-            p.restoring = path.as_ref().map_or(false, |f| self.st.scroll.contains_key(f));
+            p.restoring = path.as_ref().map_or(false, |f| self.st.scroll.contains_key(&place_key(f, url)));
             self.set_banner(id, None);
         }
         let wid = self.panes[&id].shell;
@@ -1365,7 +1376,7 @@ impl App {
         if let (Some(f), true) = (paths::url_to_path(url), y >= 0.0 && y.is_finite()) {
             if Some(&f) == p.current.as_ref() && !render::is_source_url(url) {
                 p.restoring = true;
-                self.st.set_scroll(&f, y.round());
+                self.st.set_scroll(&place_key(&f, url), y.round());
             }
         }
         let _ = self.panes[&id].content.reload();
@@ -1392,14 +1403,15 @@ impl App {
         self.send_pane_state(id);
         let Some(p) = self.panes.get_mut(&id) else { return };
         let path = paths::url_to_path(url);
-        let docx = render::is_docx_url(url);
-        if render::is_converted_url(url) {
+        let converted = render::is_converted_url(url);
+        let docx = render::is_docx_url(url) || converted;
+        if converted {
             let converting = p.banner.as_ref().map_or(false, |b| b["kind"] == "converting");
             if converting {
                 self.set_banner(id, None);
             }
-            return;
         }
+        let Some(p) = self.panes.get_mut(&id) else { return };
         if let Some(f) = path.clone().filter(|_| !docx) {
             let proxy = self.proxy.clone();
             std::thread::spawn(move || {
@@ -1414,10 +1426,11 @@ impl App {
         let f = path.unwrap();
         // ui/content.js restores from this session's memory if it has one, else from the
         // saved state. Pages it doesn't run in (e.g. PDFs) get a plain scroll.
+        let key = place_key(&f, url);
         let saved = if render::is_source_url(url) {
             json!({"y": 0})
         } else {
-            json!({"y": self.st.scroll.get(&f).copied().unwrap_or(0.0), "sel": self.st.selection.get(&f)})
+            json!({"y": self.st.scroll.get(&key).copied().unwrap_or(0.0), "sel": self.st.selection.get(&key)})
         };
         let js = format!(
             "(function(st){{if(window.__condor){{window.__condor.restore(st);return}}\
@@ -1559,17 +1572,18 @@ impl App {
         }
     }
 
-    /// The file a pane's polled URL refers to, if it is still the pane's current rendered view.
+    /// The saved-place key (see `place_key`) for a pane's polled URL, if it is still the pane's
+    /// current rendered view.
     fn polled_file(&self, id: PaneId, url: &str) -> Option<String> {
         let p = self.panes.get(&id)?;
         // Saved positions are for the rendered view (the source view's last only a session).
         let f = paths::url_to_path(url).filter(|_| !render::is_source_url(url))?;
-        // Office files: only the built-in view's position is known (the PDF viewer, the Windows
-        // previewer and the placeholder page under it all read as 0).
-        if convert::convertible(&f) && (!render::is_docx_url(url) || p.preview.is_some()) {
+        // Office files: the built-in and PDF views' positions are known (the Windows previewer
+        // and the placeholder page under it read as 0).
+        if convert::convertible(&f) && (!(render::is_docx_url(url) || render::is_converted_url(url)) || p.preview.is_some()) {
             return None;
         }
-        (Some(&f) == p.current.as_ref() && !p.restoring).then_some(f)
+        (Some(&f) == p.current.as_ref() && !p.restoring).then(|| place_key(&f, url))
     }
 
     fn on_scroll(&mut self, id: PaneId, url: &str, y: f64, sel: serde_json::Value) {

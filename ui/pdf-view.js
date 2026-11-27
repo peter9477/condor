@@ -77,8 +77,14 @@ function goTo(i, y = 0) {
   scrollBy({top: p.div.getBoundingClientRect().top - TOP + y * scale, behavior: "instant"});
 }
 
-async function draw(p) {
-  if (p.drawn === scale) return;
+// Draw page p at the current scale (once; the promise settles when its text is there too).
+function draw(p) {
+  if (p.drawn === scale) return p.drawing;
+  p.drawing = drawNow(p);
+  return p.drawing;
+}
+
+async function drawNow(p) {
   const s = scale;
   p.drawn = s;
   if (p.task) p.task.cancel();
@@ -103,12 +109,16 @@ async function draw(p) {
   // Selectable text over the picture.
   const t = document.createElement("div");
   t.className = "textLayer";
+  const tl = new pdfjs.TextLayer({textContentSource: page.streamTextContent({includeMarkedContent: true, disableNormalization: true}), container: t, viewport: vp});
   try {
-    await new pdfjs.TextLayer({textContentSource: page.streamTextContent({includeMarkedContent: true, disableNormalization: true}), container: t, viewport: vp}).render();
+    await tl.render();
   } catch (e) {}
   if (p.drawn !== s) return;
   if (p.text) p.text.replaceWith(t); else p.div.append(t);
   p.text = t;
+  // One span per text item, in order: what search matches map onto.
+  p.spans = tl.textDivs;
+  paintFinds();
   // Links: within the document (contents pages) and out of it.
   const l = document.createElement("div");
   l.className = "links";
@@ -133,6 +143,7 @@ async function draw(p) {
 function letGo(p) {
   if (!p.drawn) return;
   p.drawn = 0;
+  p.spans = null;
   if (p.task) p.task.cancel();
   for (const k of ["canvas", "text", "links"]) {
     if (p[k]) { p[k].remove(); p[k] = null; }
@@ -254,6 +265,14 @@ bar.append(pageLabel);
 button("−", "Zoom out (Ctrl+-)", () => setZoom(zoom / 1.2));
 const zoomLabel = button("", "Fit the width (Ctrl+0)", () => setZoom(1));
 button("+", "Zoom in (Ctrl+=)", () => setZoom(zoom * 1.2));
+function fbtnSearch() {
+  const b = document.createElement("button");
+  b.textContent = "\u2315";
+  b.title = "Find (Ctrl+F)";
+  b.className = "search";
+  b.onclick = openFind;
+  return b;
+}
 function setZoom(z) {
   zoom = Math.max(0.2, Math.min(8, z));
   if (Math.abs(zoom - 1) < 0.02) zoom = 1;
@@ -272,6 +291,182 @@ addEventListener("keydown", (e) => {
   else if (e.key === "0") setZoom(1);
   else return;
   e.preventDefault();
+}, true);
+
+// ----- Search (Ctrl+F): every match highlighted, the current one stronger; Enter / F3 for the
+// next, Shift+Enter / Shift+F3 for the one before, Esc to close.
+
+// A page's text as pdf.js gives it, item by item (the same items its text layer makes spans
+// of), joined into one string to search, with a space where a line ends.
+async function pageText(p) {
+  if (p.textItems) return p.textItems;
+  const page = await pdf.getPage(p.n);
+  const tc = await page.getTextContent({disableNormalization: true});
+  const items = tc.items.filter((it) => it.str !== undefined);
+  let all = "";
+  const starts = [];
+  for (const it of items) {
+    starts.push(all.length);
+    all += it.str;
+    if (it.hasEOL && !/\s$/.test(it.str)) all += " ";
+  }
+  p.textItems = {items, starts, lower: all.toLowerCase()};
+  return p.textItems;
+}
+
+// Offset in a page's joined text -> [item index, offset within its text].
+function itemAt(t, off) {
+  let lo = 0, hi = t.starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (t.starts[mid] <= off) lo = mid; else hi = mid - 1;
+  }
+  return [lo, Math.min(off - t.starts[lo], t.items[lo].str.length)];
+}
+
+let finds = [];      // {p (page), start, end}
+let findAt = -1;     // the current one
+let findQuery = "";
+let findRun = 0;
+
+async function search(q) {
+  const run = ++findRun;
+  findQuery = q;
+  finds = [];
+  findAt = -1;
+  const needle = q.toLowerCase().replace(/\s+/g, " ");
+  if (!needle.trim()) { paintFinds(); findCount(); return; }
+  const from = place();
+  for (const p of pages) {
+    const t = await pageText(p);
+    if (run !== findRun) return;
+    for (let i = t.lower.indexOf(needle); i >= 0; i = t.lower.indexOf(needle, i + 1)) {
+      finds.push({p, start: i, end: i + needle.length});
+    }
+    findCount(true);
+  }
+  // The first match from where the reader is.
+  const here = from ? from.i : 0;
+  findAt = finds.findIndex((f) => f.p.n - 1 >= here);
+  if (findAt < 0 && finds.length) findAt = 0;
+  findCount();
+  paintFinds();
+  if (findAt >= 0) showFind();
+}
+
+function rangeOf(f) {
+  const t = f.p.textItems, spans = f.p.spans;
+  if (!t || !spans) return null;
+  const [a, ao] = itemAt(t, f.start), [b, bo] = itemAt(t, f.end);
+  const na = spans[a] && spans[a].firstChild, nb = spans[b] && spans[b].firstChild;
+  if (!na || !nb) return null;
+  const r = new Range();
+  try {
+    r.setStart(na, Math.min(ao, na.length));
+    r.setEnd(nb, Math.min(bo, nb.length));
+  } catch (e) {
+    return null;
+  }
+  return r;
+}
+
+// Highlight the matches on the pages drawn now.
+function paintFinds() {
+  if (!window.CSS || !CSS.highlights) return;
+  const all = [], cur = [];
+  finds.forEach((f, i) => {
+    if (!f.p.spans) return;
+    const r = rangeOf(f);
+    if (r) (i === findAt ? cur : all).push(r);
+  });
+  CSS.highlights.set("find", new Highlight(...all));
+  CSS.highlights.set("find-cur", new Highlight(...cur));
+}
+
+async function showFind() {
+  const f = finds[findAt];
+  if (!f) return;
+  const r0 = f.p.div.getBoundingClientRect();
+  if (r0.bottom < 0 || r0.top > innerHeight) goTo(f.p.n - 1);
+  await draw(f.p);
+  if (finds[findAt] !== f) return;
+  paintFinds();
+  const r = rangeOf(f);
+  if (!r) return;
+  const box = r.getBoundingClientRect();
+  if (box.top < 60 || box.bottom > innerHeight - 20) scrollBy({top: box.top - innerHeight / 3, behavior: "instant"});
+  if (box.left < 0 || box.right > innerWidth) scrollBy({left: box.left - innerWidth / 3, behavior: "instant"});
+}
+
+function step(dir) {
+  if (!finds.length) return;
+  findAt = (findAt + dir + finds.length) % finds.length;
+  findCount();
+  showFind();
+}
+
+const findBox = document.createElement("div");
+findBox.id = "find";
+findBox.hidden = true;
+const findInput = document.createElement("input");
+findInput.placeholder = "Find in document";
+findInput.spellcheck = false;
+const findLabel = document.createElement("span");
+findLabel.className = "count";
+const fbtn = (text, title, f) => {
+  const b = document.createElement("button");
+  b.textContent = text;
+  b.title = title;
+  b.onclick = f;
+  return b;
+};
+findBox.append(findInput, findLabel,
+  fbtn("\u2191", "Previous (Shift+Enter)", () => step(-1)),
+  fbtn("\u2193", "Next (Enter)", () => step(1)),
+  fbtn("\u00d7", "Close (Esc)", () => closeFind()));
+function findCount(busy) {
+  findLabel.textContent = !findQuery.trim() ? "" : finds.length ? (findAt >= 0 ? findAt + 1 + " of " : "") + finds.length + (busy ? "\u2026" : "")
+    : busy ? "\u2026" : "None";
+}
+let findTimer = null;
+findInput.addEventListener("input", () => {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(() => search(findInput.value), 150);
+});
+findInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === "F3") {
+    e.preventDefault();
+    if (findInput.value !== findQuery) search(findInput.value); else step(e.shiftKey ? -1 : 1);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation(); // not back to the tree: just close this
+    closeFind();
+  }
+});
+function openFind() {
+  findBox.hidden = false;
+  const sel = String(getSelection() || "").trim();
+  if (sel && sel.length < 200 && !sel.includes("\n")) findInput.value = sel;
+  findInput.focus();
+  findInput.select();
+  if (findInput.value && findInput.value !== findQuery) search(findInput.value);
+}
+function closeFind() {
+  findBox.hidden = true;
+  findRun++;
+  finds = [];
+  findQuery = "";
+  paintFinds();
+  findInput.blur();
+}
+addEventListener("keydown", (e) => {
+  if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === "f" || e.key === "F")) {
+    e.preventDefault();
+    openFind();
+  } else if (e.key === "F3" && !e.ctrlKey && !e.altKey && document.activeElement !== findInput) {
+    e.preventDefault();
+    if (findBox.hidden) openFind(); else step(e.shiftKey ? -1 : 1);
+  }
 }, true);
 
 // The page mostly in view: the last one starting above a third of the way down (or the last
@@ -308,7 +503,8 @@ function showPage() {
   }
   msg.hidden = true;
   bar.append(edgeLink("Edge"));
-  document.body.append(bar);
+  bar.insertBefore(fbtnSearch(), bar.firstChild);
+  document.body.append(bar, findBox);
   layout();
   await contents().catch(() => {});
   addEventListener("resize", () => layout());

@@ -150,3 +150,16 @@ body.toc-open { margin-left: 237px; }
     top:0;
   }
 
+
+#bar button.search { font-size: 15px; }
+#find { position: fixed; top: 40px; right: 12px; z-index: 3; display: flex; gap: 2px; align-items: center;
+font: 12px 'Segoe UI', system-ui, sans-serif; background: #fafafa; border: 1px solid #c8c8c8; border-radius: 5px; padding: 3px 4px;
+box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+#find[hidden] { display: none; }
+#find input { width: 190px; border: 1px solid #c8c8c8; border-radius: 4px; padding: 3px 6px; font: inherit; outline: none; }
+#find input:focus { border-color: #6a9ad8; }
+#find .count { color: #555; min-width: 58px; text-align: center; }
+#find button { border: 0; background: none; min-width: 22px; height: 22px; border-radius: 4px; cursor: pointer; color: #333; font: inherit; }
+#find button:hover { background: #e6e6e6; }
+::highlight(find) { background-color: rgba(255, 200, 0, .45); }
+::highlight(find-cur) { background-color: rgba(255, 110, 0, .65); }
