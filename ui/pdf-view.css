@@ -1,0 +1,152 @@
+html, body { margin: 0; padding: 0; background: #e4e4e4; }
+#pages { padding: 16px; }
+.page { position: relative; margin: 0 auto 16px; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.25); overflow: hidden; }
+.page canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.links { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.links a { position: absolute; pointer-events: auto; }
+.links a:hover { background: rgba(255, 230, 0, .2); }
+.msg { padding: 24px; font: 14px 'Segoe UI', system-ui, sans-serif; color: #333; }
+#bar { position: fixed; top: 8px; right: 12px; z-index: 3; display: flex; gap: 2px; align-items: center;
+font: 12px 'Segoe UI', system-ui, sans-serif; background: #fafafa; border: 1px solid #c8c8c8; border-radius: 5px;
+padding: 2px 4px; opacity: .85; }
+#bar:hover { opacity: 1; }
+#bar button { border: 0; background: none; min-width: 24px; height: 22px; border-radius: 4px; cursor: pointer; color: #333; font: inherit; }
+#bar button:hover { background: #e6e6e6; }
+#bar .pg { color: #555; padding: 0 6px; min-width: 44px; text-align: center; }
+#bar a { color: #0b4fa8; text-decoration: none; padding: 0 6px; border-left: 1px solid #ddd; margin-left: 2px; }
+#bar a:hover { text-decoration: underline; }
+#toc-btn { position: fixed; top: 8px; left: 8px; z-index: 3; width: 30px; height: 28px; border: 1px solid #c8c8c8;
+border-radius: 5px; background: #fafafa; color: #444; font-size: 15px; cursor: pointer; opacity: .85; }
+#toc-btn:hover, #toc-btn.on { opacity: 1; background: #fff; }
+body.toc-open #toc-btn { display: none; }
+#toc { position: fixed; top: 0; left: 0; bottom: 0; width: 236px; z-index: 2; overflow-y: auto; background: #fafafa;
+border-right: 1px solid #d0d0d0; font: 13px 'Segoe UI', system-ui, sans-serif; color: #222; padding-bottom: 12px; }
+#toc .toc-head { position: sticky; top: 0; background: #fafafa; font-weight: 600; padding: 9px 10px 7px;
+border-bottom: 1px solid #e2e2e2; display: flex; justify-content: space-between; align-items: center; }
+#toc .toc-head button { border: 0; background: none; font-size: 16px; color: #777; cursor: pointer; padding: 0 4px; border-radius: 4px; }
+#toc .toc-head button:hover { background: #e6e6e6; color: #222; }
+#toc a { display: block; padding: 3px 10px; color: inherit; text-decoration: none; cursor: pointer; line-height: 1.35; }
+#toc a.l0 { font-weight: 600; margin-top: 4px; }
+#toc a:hover { background: #ececec; }
+#toc a.cur { background: #dde8f7; color: #0b4fa8; }
+#toc .num { color: #777; margin-right: 6px; font-weight: 400; }
+body.toc-open { margin-left: 237px; }
+/* pdf.js text layer (from pdfjs-dist web/pdf_viewer.css, Apache-2.0) */
+.textLayer{
+  position:absolute;
+  text-align:initial;
+  inset:0;
+  overflow:clip;
+  opacity:1;
+  line-height:1;
+          text-size-adjust:none;
+  forced-color-adjust:none;
+  transform-origin:0 0;
+  caret-color:CanvasText;
+  z-index:0;
+}
+
+.textLayer.highlighting{
+    touch-action:none;
+  }
+
+.textLayer :is(span,br){
+    color:transparent;
+    position:absolute;
+    white-space:pre;
+    cursor:text;
+    transform-origin:0% 0%;
+  }
+
+.textLayer  > :not(.markedContent),.textLayer .markedContent span:not(.markedContent){
+    z-index:1;
+  }
+
+.textLayer span.markedContent{
+    top:0;
+    height:0;
+  }
+
+.textLayer span[role="img"]{
+            user-select:none;
+    cursor:default;
+  }
+
+.textLayer .highlight{
+    --highlight-bg-color:rgb(180 0 170 / 0.25);
+    --highlight-selected-bg-color:rgb(0 100 0 / 0.25);
+    --highlight-backdrop-filter:none;
+    --highlight-selected-backdrop-filter:none;
+  }
+
+@media screen and (forced-colors: active){
+
+.textLayer .highlight{
+      --highlight-bg-color:transparent;
+      --highlight-selected-bg-color:transparent;
+      --highlight-backdrop-filter:var(--hcm-highlight-filter);
+      --highlight-selected-backdrop-filter:var(
+        --hcm-highlight-selected-filter
+      );
+  }
+    }
+
+.textLayer .highlight{
+
+    margin:-1px;
+    padding:1px;
+    background-color:var(--highlight-bg-color);
+            backdrop-filter:var(--highlight-backdrop-filter);
+    border-radius:4px;
+  }
+
+.appended:is(.textLayer .highlight){
+      position:initial;
+    }
+
+.begin:is(.textLayer .highlight){
+      border-radius:4px 0 0 4px;
+    }
+
+.end:is(.textLayer .highlight){
+      border-radius:0 4px 4px 0;
+    }
+
+.middle:is(.textLayer .highlight){
+      border-radius:0;
+    }
+
+.selected:is(.textLayer .highlight){
+      background-color:var(--highlight-selected-bg-color);
+              backdrop-filter:var(--highlight-selected-backdrop-filter);
+    }
+
+    background:rgba(0 0 255 / 0.25);
+    background:color-mix(in srgb, AccentColor, transparent 75%);
+  }
+
+.textLayer ::selection{
+    background:rgba(0 0 255 / 0.25);
+    background:color-mix(in srgb, AccentColor, transparent 75%);
+  }
+
+    background:transparent;
+  }
+
+.textLayer br::selection{
+    background:transparent;
+  }
+
+.textLayer .endOfContent{
+    display:block;
+    position:absolute;
+    inset:100% 0 0;
+    z-index:0;
+    cursor:default;
+            user-select:none;
+  }
+
+.textLayer.selecting .endOfContent{
+    top:0;
+  }
+

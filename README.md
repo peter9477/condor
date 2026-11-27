@@ -11,7 +11,12 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   to its root folder. The tree follows along. ← / →, Alt+Left/Right and the mouse's side
   buttons go back and forward.
 - Each document's scroll position and text selection are kept, both while moving between
-  documents and across restarts (PDFs keep their position only within the PDF viewer).
+  documents and across restarts.
+- PDFs show in Condor's own PDF view (the bundled [pdf.js](https://github.com/mozilla/pdf.js)),
+  so they keep their place like any other document: pages drawn as they come into view,
+  selectable text, working links, the document's bookmarks as a contents menu (☰), a page
+  counter, and zoom (− / +, Ctrl+wheel, Ctrl+= / Ctrl+-, Ctrl+0 to fit the width). **Edge**
+  (top right) opens the file in Edge's own viewer instead (Back returns).
 - `</>` (or Ctrl+U) switches Markdown, HTML and SVG files between the rendered view and
   highlighted source; each file remembers which view you last used.
 - Files Condor can't show (spreadsheets, Word documents, other binaries) get **Open** and
@@ -26,7 +31,7 @@ A lightweight, read-only viewer for folder trees and the documents in them, for 
   Condor's built-in view (Word .docx files: rendered as pages, quickly, with the bundled
   [docx-preview](https://github.com/VolodymyrBaydalka/docxjs)); the Windows preview handler
   their application installs (what Explorer's preview pane uses); or converted to PDF by
-  LibreOffice (cached). ⚙ sets the general choice. The selector in a document's bar
+  LibreOffice (cached) and shown in the PDF view. ⚙ sets the general choice. The selector in a document's bar
   (Built-in | PDF | Windows) switches that file type in all windows (a dot marks the type's
   choice; the settings panel lists these so they can be undone). Its lock keeps the current
   viewer for that one file; while locked, the selector changes only that file.

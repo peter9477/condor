@@ -32,6 +32,32 @@ const DOCX_PREVIEW_JS: &str = include_str!("../ui/vendor/docx-preview.min.js");
 const DOCX_VIEW_JS: &str = include_str!("../ui/docx-view.js");
 const DOCX_CSS: &str = include_str!("../ui/docx-view.css");
 
+/// The PDF view's page (ui/pdf-view.js, a module) runs only its own script and the bundled
+/// pdf.js (ui/vendor/pdfjs), which it imports from `/__condor/pdfjs/`, with its worker.
+fn pdf_csp(nonce: &str) -> String {
+    let js = format!("{}/__condor/pdfjs/", paths::file_origin());
+    format!("default-src 'self' data: blob:; script-src 'nonce-{nonce}' {js}; worker-src {js} blob:; style-src 'self' 'unsafe-inline'; img-src * data: blob:; object-src 'none'; frame-src 'none'")
+}
+const PDF_VIEW_JS: &str = include_str!("../ui/pdf-view.js");
+const PDF_CSS: &str = include_str!("../ui/pdf-view.css");
+const PDFJS: &[u8] = include_bytes!("../ui/vendor/pdfjs/pdf.min.mjs");
+const PDFJS_WORKER: &[u8] = include_bytes!("../ui/vendor/pdfjs/pdf.worker.min.mjs");
+
+/// The PDF view's page for `path`; it reads the PDF itself from `?{src}` (the file, or the
+/// PDF LibreOffice made of it).
+fn pdf_page(path: &str, src: &str) -> Resp {
+    let nonce = format!("{:016x}", hash_of(&[path.as_bytes(), &std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()).to_le_bytes()]));
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title><style>{PDF_CSS}</style></head><body>\
+         <div id=\"msg\" class=\"msg\">Loading\u{2026}</div><div id=\"pages\"></div>\
+         <script nonce=\"{nonce}\">window.PDF_SRC = {};</script><script type=\"module\" nonce=\"{nonce}\">{PDF_VIEW_JS}</script></body></html>",
+        escape(file_name(path)),
+        serde_json::json!(src)
+    );
+    respond(StatusCode::OK, "text/html; charset=utf-8", Some(&pdf_csp(&nonce)), html.into_bytes())
+}
+
 /// Word files the built-in view can show.
 pub fn web_viewable(path: &str) -> bool {
     matches!(ext_of(path).as_str(), "docx" | "docm" | "dotx" | "dotm")
@@ -309,6 +335,20 @@ pub fn previewable(path: &str) -> bool {
 
 /// Handle a request for `url_path` (path part of the URL), with optional query string.
 pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
+    // The PDF view's library (not a file).
+    if let Some(name) = url_path.strip_prefix("/__condor/pdfjs/") {
+        let body = match name {
+            "pdf.min.mjs" => PDFJS,
+            "pdf.worker.min.mjs" => PDFJS_WORKER,
+            _ => return message(StatusCode::NOT_FOUND, "Not found", name),
+        };
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/javascript")
+            .header(header::CACHE_CONTROL, "max-age=86400")
+            .body(Cow::Borrowed(body))
+            .unwrap();
+    }
     let Some(path) = paths::url_path_to_path(url_path) else {
         return html_page(
             StatusCode::OK,
@@ -342,8 +382,10 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
     }
     let ext = ext_of(&path);
     // Office and similar documents, as a PDF made by LibreOffice (blocks while it converts).
+    // Shown in the PDF view, which then asks for the PDF itself (`&raw`; cached by then).
     if query.map_or(false, |q| q.split('&').any(|p| p == "converted")) {
         return match crate::convert::to_pdf(&path) {
+            Ok(_) if !raw => pdf_page(&path, "converted&raw"),
             Ok(b) => respond(StatusCode::OK, "application/pdf", None, b),
             Err(e) => message(StatusCode::OK, "Can't show this file", &format!("{}: {e}", file_name(&path))),
         };
@@ -357,6 +399,10 @@ pub fn serve(url_path: &str, query: Option<&str>) -> Resp {
     }
     if source {
         return text_view(&path, &ext, meta.len());
+    }
+    // PDFs in Condor's PDF view (`?raw` is the file itself, also for the browser's viewer).
+    if ext == "pdf" && !raw {
+        return pdf_page(&path, "raw");
     }
     // Rendered views of a request that isn't a top-level document (e.g. <img src="x.svg">)
     // still get the raw bytes, since only types we render specially are affected.
